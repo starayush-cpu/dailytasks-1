@@ -1,0 +1,22 @@
+{
+  "entry": "client/dist/index.html",
+  "managedCronJobs": [
+    {
+      "action": "rolloverDay",
+      "args": {},
+      "id": "daily-hub-rollover",
+      "kind": "space_action",
+      "schedule": "daily@00:34:34",
+      "slug": "daily-hub"
+    }
+  ],
+  "name": "Daily Hub",
+  "platformVersion": 31,
+  "runtime": "typescript",
+  "slug": "daily-hub",
+  "targets": [
+    "mobile",
+    "desktop",
+    "widget"
+  ]
+}

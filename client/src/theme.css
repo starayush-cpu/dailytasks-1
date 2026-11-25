@@ -1,0 +1,103 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --font-display: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Manrope", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #120e2e;
+  --surface: rgba(255, 255, 255, 0.07);
+  --text: #f4f2ff;
+  --dim: #a49fd0;
+  --border: rgba(255, 255, 255, 0.14);
+  --accent: #2dd4bf;
+  --radius: 18px;
+  --space-surface: var(--surface);
+  --space-surface-alt: rgba(255, 255, 255, 0.1);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+body {
+  font-family: var(--font-body);
+  background:
+    radial-gradient(900px 600px at 85% -10%, rgba(88, 101, 242, 0.45), transparent 60%),
+    radial-gradient(800px 550px at -10% 30%, rgba(45, 212, 191, 0.22), transparent 55%),
+    radial-gradient(700px 500px at 55% 110%, rgba(139, 92, 246, 0.35), transparent 60%),
+    linear-gradient(160deg, #171138 0%, #120e2e 55%, #0d0a24 100%);
+  background-attachment: fixed;
+  color: var(--text);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.glass {
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.045));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 22px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 18px 45px rgba(2, 0, 18, 0.35);
+}
+
+.glass-soft {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.field {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 6, 32, 0.45);
+  color: var(--text);
+  padding: 0.55rem 0.75rem;
+  font-size: 14px;
+  outline: none;
+}
+.field:focus {
+  border-color: rgba(45, 212, 191, 0.7);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.18);
+}
+.field option {
+  background: #1d1747;
+  color: #f4f2ff;
+}
+
+input[type="time"].field,
+input[type="date"].field {
+  color-scheme: dark;
+}
+
+/* Phone tap targets: at least 32px tall. */
+@layer base {
+  button, [role="button"], select, summary, input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2rem;
+  }
+}
