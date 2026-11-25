@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
-import { actionFields } from "@hatch/space-sdk/fields" with { type: "macro" };
-import type { Actions } from "../../server/src/actions";
 import { api, type ApiResponse } from "./api";
-
-const FIELDS = actionFields<typeof Actions>();
 
 type DayData = ApiResponse<typeof api, "getDay">;
 type DayTask = DayData["tasks"][number];
@@ -178,7 +173,6 @@ export function App() {
 
   return (
     <div className="min-h-screen">
-      <SafeAreaTopScrim backgroundColor="#171138" />
       <div className="mx-auto max-w-[1460px] px-3 pb-10 sm:px-5">
         {/* Compact profile bar (phones) */}
         <div className="glass mt-3 flex items-center gap-3 px-4 py-3 lg:hidden">
@@ -658,7 +652,7 @@ function TaskForm({
           </label>
           <input
             id={existing ? "edit-title" : "new-title"}
-            {...FIELDS.addTask.title}
+            maxLength={120}
             className="field"
             placeholder="e.g. Fermah chat session, X post, Design review…"
             value={title}
@@ -939,7 +933,7 @@ function ProjectForm({
         </label>
         <input
           id={`${uid}-name`}
-          {...FIELDS.addProject.name}
+          maxLength={60}
           className="field"
           placeholder="Project name, e.g. Fermah Quiz Hub"
           value={name}
@@ -965,7 +959,7 @@ function ProjectForm({
       </label>
       <input
         id={`${uid}-link`}
-        {...FIELDS.addProject.link}
+        maxLength={300}
         type="url"
         className="field mt-2"
         placeholder="Link (optional)"
@@ -977,7 +971,7 @@ function ProjectForm({
       </label>
       <input
         id={`${uid}-note`}
-        {...FIELDS.addProject.note}
+        maxLength={200}
         className="field mt-2"
         placeholder="Short note (optional)"
         value={note}
@@ -1206,7 +1200,6 @@ function ChatTracker({
           <div className="flex gap-1.5">
             <input
               id="chat-sent"
-              {...FIELDS.setChatSent.sent}
               type="number"
               className="field"
               value={sentInput}
@@ -1232,7 +1225,6 @@ function ChatTracker({
           <div className="flex gap-1.5">
             <input
               id="chat-target"
-              {...FIELDS.setChatTarget.target}
               type="number"
               className="field"
               value={targetInput}

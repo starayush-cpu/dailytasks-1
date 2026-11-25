@@ -1,0 +1,1 @@
+{"buildCommand":"bun run build:client","framework":null,"installCommand":"bun install","outputDirectory":"client/dist"}
