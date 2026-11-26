@@ -85,8 +85,11 @@ function todayStr(): string {
 }
 
 function addDays(dateStr: string, n: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + n);
+  // Parse at UTC noon: local-midnight parsing + toISOString() shifts the
+  // date by one in IST (midnight IST is 18:30 UTC the day before), which
+  // used to make "Yesterday" land on the day before yesterday.
+  const d = new Date(dateStr + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
@@ -95,13 +98,13 @@ function dateLabel(dateStr: string): string {
   if (dateStr === today) return "Today";
   if (dateStr === addDays(today, 1)) return "Tomorrow";
   if (dateStr === addDays(today, -1)) return "Yesterday";
-  const d = new Date(dateStr + "T00:00:00");
-  return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
+  const d = new Date(dateStr + "T12:00:00Z");
+  return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
 }
 
 function longDateLabel(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
-  return d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const d = new Date(dateStr + "T12:00:00Z");
+  return d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
 }
 
 function daysInMonth(year: number, month: number): number {
@@ -374,6 +377,13 @@ function TimePicker({ value, onChange }: { value: string; onChange: (v: string) 
     onChange(`${String(hh).padStart(2, "0")}:${String(nextMinute).padStart(2, "0")}`);
   };
 
+  const QUICK_TIMES = [
+    { label: "9 AM", value: "09:00" },
+    { label: "12 PM", value: "12:00" },
+    { label: "6 PM", value: "18:00" },
+    { label: "9 PM", value: "21:00" },
+  ] as const;
+
   return (
     <div className="time-picker">
       <div className="time-12h">
@@ -421,18 +431,19 @@ function TimePicker({ value, onChange }: { value: string; onChange: (v: string) 
           </button>
         </div>
       </div>
-      <button type="button" className="time-quick" onClick={() => onChange("09:00")}>
-        9 AM
-      </button>
-      <button type="button" className="time-quick" onClick={() => onChange("12:00")}>
-        12 PM
-      </button>
-      <button type="button" className="time-quick" onClick={() => onChange("18:00")}>
-        6 PM
-      </button>
-      <button type="button" className="time-quick" onClick={() => onChange("21:00")}>
-        9 PM
-      </button>
+      <div className="time-quick-row" role="group" aria-label="Quick times">
+        {QUICK_TIMES.map((q) => (
+          <button
+            key={q.value}
+            type="button"
+            className={`time-quick ${value === q.value ? "active" : ""}`}
+            aria-pressed={value === q.value}
+            onClick={() => onChange(q.value)}
+          >
+            {q.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -477,6 +488,10 @@ function TaskRow({
   useEffect(() => setLinkDraft(t.postLink ?? ""), [t.postLink]);
   const color = t.projectColor ? COLOR_HEX[t.projectColor] : "rgba(255,255,255,0.25)";
   const timeLeft = timeLeftLabel(dateStr, t.time, now);
+  // The title often already names the project ("Post about fermah") — then
+  // the chip shows just the project mark instead of repeating the name.
+  const titleNamesProject =
+    !!t.projectName && t.title.toLowerCase().includes(t.projectName.toLowerCase());
 
   return (
     <div
@@ -502,7 +517,7 @@ function TaskRow({
           </div>
           <div className="task-meta">
             {t.projectName && (
-              <span className="task-project">
+              <span className="task-project" title={titleNamesProject ? t.projectName : undefined}>
                 <ProjectAvatar
                   project={{
                     name: t.projectName,
@@ -511,12 +526,11 @@ function TaskRow({
                   }}
                   size={30}
                 />
-                {t.projectName}
+                {!titleNamesProject && t.projectName}
               </span>
             )}
             <span className="task-time">🕐 {fmtTime12(t.time)}</span>
             {t.time && st === "pending" && <span className="task-countdown">{timeLeft}</span>}
-            <span className={`task-status ${statusClass(st)}`}>{statusLabel(st)}</span>
             {t.kind === "post" && (
               <span className="task-platforms">
                 {platformIcon(PLATFORM_ICONS.x.src, "X", 18)}
@@ -1039,9 +1053,11 @@ function DayDetail({
   onClose: () => void;
   onJumpToSchedule: (date: string) => void;
 }) {
-  const [day, setDay] = useState<HistoryDay | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialDay = api.getCachedHistory({ from: date, to: date });
+  const [day, setDay] = useState<HistoryDay | null>(initialDay?.days[0] ?? null);
+  const [loading, setLoading] = useState(initialDay == null);
   useEffect(() => {
+    if (api.getCachedHistory({ from: date, to: date })) return;
     let alive = true;
     setLoading(true);
     api
@@ -1094,8 +1110,9 @@ function DayDetail({
           </button>
         </div>
         {loading ? (
-          <div className="loading-block">
-            <span className="spinner" /> Loading that day…
+          <div className="skeleton-block" aria-label="Loading that day">
+            <div className="skeleton-row" />
+            <div className="skeleton-row" />
           </div>
         ) : tasks.length === 0 ? (
           <p className="empty-note">No tasks were scheduled for this day.</p>
@@ -1109,8 +1126,9 @@ function DayDetail({
                     <span className="day-detail-status">{t.status === "done" ? "✓" : t.status === "missed" ? "✕" : "○"}</span>
                     <span className="day-detail-title">{t.title}</span>
                     <span className="day-detail-time">{fmtTime12(t.time)}</span>
-                    <span className={`day-detail-badge ${statusClass(t.status)}`}>{statusLabel(t.status)}</span>
-                    {verifyBadge(t, date, new Date())}
+                    {verifyBadge(t, date, new Date()) ?? (
+                      <span className={`day-detail-badge ${statusClass(t.status)}`}>{statusLabel(t.status)}</span>
+                    )}
                     {t.kind === "event" && t.eventRole && (
                       <span className={`event-role-badge ${t.eventRole}`}>
                         {t.eventRole === "play" ? "▶ Play" : "🎤 Host"}
@@ -1142,17 +1160,24 @@ function DayDetail({
 // ---------------------------------------------------------------------------
 
 function BestTimePanel() {
-  const [history, setHistory] = useState<GetHistoryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const range = useMemo(() => {
+    const to = todayStr();
+    const fromD = new Date(to + "T12:00:00Z");
+    fromD.setUTCDate(fromD.getUTCDate() - 29);
+    return { from: fromD.toISOString().slice(0, 10), to };
+  }, []);
+  // Render instantly from the history cache when a recent read exists
+  // (returning from History/Calendar remounts this panel — no refetch).
+  const initialHistory = api.getCachedHistory(range);
+  const [history, setHistory] = useState<GetHistoryResponse | null>(initialHistory);
+  const [loading, setLoading] = useState(initialHistory == null);
 
   useEffect(() => {
+    if (api.getCachedHistory(range)) return;
     let alive = true;
-    const to = todayStr();
-    const fromD = new Date(to + "T00:00:00Z");
-    fromD.setUTCDate(fromD.getUTCDate() - 29);
-    const from = fromD.toISOString().slice(0, 10);
+    setLoading(true);
     api
-      .getHistory({ from, to })
+      .getHistory(range)
       .then((h: GetHistoryResponse) => {
         if (alive) setHistory(h);
       })
@@ -1165,7 +1190,7 @@ function BestTimePanel() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [range]);
 
   const samples = useMemo(() => {
     if (!history) return [];
@@ -1204,8 +1229,10 @@ function BestTimePanel() {
         </div>
       </div>
       {loading ? (
-        <div className="loading-block">
-          <span className="spinner" /> Loading post data…
+        <div className="skeleton-block" aria-label="Loading post data">
+          <div className="skeleton-line" style={{ width: "72%" }} />
+          <div className="skeleton-line" style={{ width: "54%" }} />
+          <div className="skeleton-line" style={{ width: "63%" }} />
         </div>
       ) : samples.length < 5 ? (
         <p className="empty-note">
@@ -1244,16 +1271,20 @@ function BestTimePanel() {
 
 function HistoryView({ onDayClick }: { onDayClick: (date: string) => void }) {
   const [range, setRange] = useState(14);
-  const [data, setData] = useState<GetHistoryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const rangeKey = useMemo(() => {
+    const to = todayStr();
+    return { from: addDays(to, -(range - 1)), to };
+  }, [range]);
+  const initialData = api.getCachedHistory(rangeKey);
+  const [data, setData] = useState<GetHistoryResponse | null>(initialData);
+  const [loading, setLoading] = useState(initialData == null);
 
   useEffect(() => {
+    if (api.getCachedHistory(rangeKey)) return;
     let alive = true;
     setLoading(true);
-    const to = todayStr();
-    const from = addDays(to, -(range - 1));
     api
-      .getHistory({ from, to })
+      .getHistory(rangeKey)
       .then((h) => {
         if (alive) setData(h);
       })
@@ -1266,9 +1297,16 @@ function HistoryView({ onDayClick }: { onDayClick: (date: string) => void }) {
     return () => {
       alive = false;
     };
-  }, [range]);
+  }, [rangeKey]);
 
-  const days = useMemo(() => [...(data?.days ?? [])].sort((a, b) => b.date.localeCompare(a.date)), [data]);
+  // One row per date, newest first (defensive: collapse any duplicate date
+  // the server might ever return).
+  const days = useMemo(() => {
+    const seen = new Set<string>();
+    return [...(data?.days ?? [])]
+      .filter((d) => (seen.has(d.date) ? false : (seen.add(d.date), true)))
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [data]);
 
   return (
     <section className="panel history-panel">
@@ -1286,8 +1324,11 @@ function HistoryView({ onDayClick }: { onDayClick: (date: string) => void }) {
         </div>
       </div>
       {loading ? (
-        <div className="loading-block">
-          <span className="spinner" /> Loading history…
+        <div className="skeleton-block" aria-label="Loading history">
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
         </div>
       ) : days.length === 0 ? (
         <p className="empty-note">No history yet. Complete a task and it will show up here.</p>
@@ -1534,6 +1575,9 @@ export function App() {
     });
     return upcoming[0] ?? pending[pending.length - 1]!;
   }, [sortedTasks, isToday, now]);
+  // Sidebar glance: the next thing coming up (today's next task, or the
+  // first pending task of the selected day when browsing another date).
+  const glanceNext = nextTask ?? sortedTasks.find((t) => t.status === "pending") ?? null;
 
   const filteredTasks = useMemo(() => {
     switch (filter) {
@@ -1790,10 +1834,19 @@ export function App() {
     const first = new Date(month.year, month.month, 1);
     const startWeekday = first.getDay();
     const total = daysInMonth(month.year, month.month);
-    const cells: { date: string | null; day: number | null }[] = [];
-    for (let i = 0; i < startWeekday; i++) cells.push({ date: null, day: null });
+    const prevTotal = daysInMonth(month.year, month.month - 1);
+    const cells: { date: string | null; day: number | null; muted?: boolean }[] = [];
+    for (let i = 0; i < startWeekday; i++) {
+      cells.push({ date: null, day: prevTotal - startWeekday + 1 + i, muted: true });
+    }
     for (let d = 1; d <= total; d++) {
       cells.push({ date: `${month.year}-${String(month.month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`, day: d });
+    }
+    // Fill the last row with muted next-month days so it never ends in
+    // empty space.
+    let nextDay = 1;
+    while (cells.length % 7 !== 0) {
+      cells.push({ date: null, day: nextDay++, muted: true });
     }
     return cells;
   }, [month]);
@@ -1802,12 +1855,12 @@ export function App() {
     return map;
   }, [monthData]);
   const weekDates = useMemo(() => {
-    const base = new Date(selectedDate + "T00:00:00");
+    const base = new Date(selectedDate + "T12:00:00Z");
     const start = new Date(base);
-    start.setDate(base.getDate() - 3);
+    start.setUTCDate(base.getUTCDate() - 3);
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(start);
-      d.setDate(start.getDate() + i);
+      d.setUTCDate(start.getUTCDate() + i);
       return d.toISOString().slice(0, 10);
     });
   }, [selectedDate]);
@@ -1965,6 +2018,30 @@ export function App() {
           )}
         </div>
 
+        {data && (
+          <div className="side-glance">
+            <div className="side-glance-head">
+              <span>{dateLabel(selectedDate)}</span>
+              <strong>
+                {doneCount}/{tasks.length} done
+              </strong>
+            </div>
+            <div className="progress-bar slim">
+              <span style={{ width: `${progressPct}%` }} />
+            </div>
+            <p className="side-glance-next">
+              {glanceNext
+                ? `Up next: ${glanceNext.title} · ${fmtTime12(glanceNext.time)}`
+                : tasks.length === 0
+                  ? "Nothing scheduled."
+                  : "All done for this day."}
+            </p>
+            <p className="side-glance-chat">
+              💬 Chat {data.chat.sent}/{data.chat.target}
+            </p>
+          </div>
+        )}
+
         <div className="side-foot">
           <label className="toggle-row">
             <input type="checkbox" checked={sound} onChange={(e) => setSound(e.target.checked)} />
@@ -1972,7 +2049,7 @@ export function App() {
           </label>
           <label className="toggle-row">
             <input type="checkbox" checked={reminders} onChange={(e) => setReminders(e.target.checked)} />
-            <span>Reminders {reminders ? "on" : "off"}</span>
+            <span>{`Reminders ${reminders ? "on" : "off"}`}</span>
           </label>
           <button type="button" className="btn btn-secondary btn-sm" onClick={testVoice}>
             🔊 Test voice
@@ -2009,7 +2086,7 @@ export function App() {
                   className={`week-day ${d === selectedDate ? "active" : ""} ${d === todayStr() ? "today" : ""}`}
                   onClick={() => setSelectedDate(d)}
                 >
-                  <span>{new Date(d + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short" })}</span>
+                  <span>{new Date(d + "T12:00:00Z").toLocaleDateString("en-IN", { weekday: "short", timeZone: "Asia/Kolkata" })}</span>
                   <strong>{Number(d.slice(8, 10))}</strong>
                 </button>
               ))}
@@ -2057,7 +2134,8 @@ export function App() {
                       className={`filter-chip ${filter === f ? "active" : ""}`}
                       onClick={() => setFilter(f)}
                     >
-                      {f === "all" ? "All" : f === "kaito" ? "Kaito" : f[0]!.toUpperCase() + f.slice(1)} · {filterCounts[f]}
+                      {f === "all" ? "All" : f === "kaito" ? "Kaito" : f[0]!.toUpperCase() + f.slice(1)}
+                      {filterCounts[f] > 0 ? ` · ${filterCounts[f]}` : ""}
                     </button>
                   ))}
                 </div>
@@ -2144,7 +2222,12 @@ export function App() {
                 </span>
               ))}
               {monthDays.map((cell, i) => {
-                if (!cell.date) return <span key={`blank-${i}`} className="calendar-cell blank" />;
+                if (!cell.date)
+                  return (
+                    <span key={`blank-${i}`} className={`calendar-cell ${cell.muted ? "muted" : "blank"}`}>
+                      {cell.muted ? <span className="calendar-day-num">{cell.day}</span> : null}
+                    </span>
+                  );
                 const tot = monthTotals.get(cell.date);
                 const done = tot?.done ?? 0;
                 const total = tot?.total ?? 0;

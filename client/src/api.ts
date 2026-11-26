@@ -458,12 +458,16 @@ const local = {
 
   getMonth(userId: number, args: { month: string }): GetMonthResponse {
     const s = loadStore(userId);
-    const recurringCount = s.tasks.filter((t) => t.recurring).length;
-    const taskById = new Map(s.tasks.map((t) => [t.id, t]));
     const isEnded = (t: LocalTask) => {
       const p = t.projectId != null ? s.projects.find((x) => x.id === t.projectId) : undefined;
       return p?.ended === true;
     };
+    // Recurring tasks repeat every day, so every day of the month carries
+    // them in its total — otherwise the calendar shows empty boxes on days
+    // that only have recurring tasks.
+    const activeRecurring = s.tasks.filter((t) => t.recurring && !isEnded(t)).length;
+    const recurringCount = activeRecurring;
+    const taskById = new Map(s.tasks.map((t) => [t.id, t]));
     const totals = new Map<string, { total: number; done: number }>();
     const entryFor = (d: string) => {
       const e = totals.get(d) ?? { total: 0, done: 0 };
@@ -479,6 +483,13 @@ const local = {
       const t = taskById.get(c.taskId);
       if (!t || isEnded(t)) continue;
       if (t.recurring || t.date === c.date) entryFor(c.date).done += 1;
+    }
+    if (activeRecurring > 0) {
+      const [y, m] = args.month.split("-").map(Number);
+      const daysInMonth = new Date(y!, m!, 0).getDate();
+      for (let d = 1; d <= daysInMonth; d++) {
+        entryFor(`${args.month}-${String(d).padStart(2, "0")}`).total += activeRecurring;
+      }
     }
     return {
       days: [...totals.entries()].map(([date, v]) => ({ date, total: v.total, done: v.done })),
@@ -862,6 +873,41 @@ const local = {
   },
 };
 
+/* ================= history cache: BestTime + History + DayDetail ========= */
+// getHistory is fetched by three components and re-runs on every view
+// switch (each remount refetched from the server, 10s+ on a cold Neon
+// database). A 5-minute in-memory cache makes revisits instant; any
+// task/chat mutation clears it so the next read is fresh.
+const historyCache = new Map<string, { at: number; data: GetHistoryResponse }>();
+const HISTORY_TTL_MS = 5 * 60 * 1000;
+function historyKey(userId: number, from: string, to: string) {
+  return `${userId}|${from}|${to}`;
+}
+function getCachedHistoryData(userId: number, from: string, to: string): GetHistoryResponse | null {
+  const hit = historyCache.get(historyKey(userId, from, to));
+  if (!hit || Date.now() - hit.at > HISTORY_TTL_MS) return null;
+  return hit.data;
+}
+function invalidateHistoryCache() {
+  historyCache.clear();
+}
+async function cachedGetHistory(userId: number, args: { from: string; to: string }): Promise<GetHistoryResponse> {
+  const hit = getCachedHistoryData(userId, args.from, args.to);
+  if (hit) return hit;
+  const data = await withFallback(
+    () => callApi<GetHistoryResponse>("/api/tasks", { action: "getHistory", userId, ...args }),
+    () => local.getHistory(userId, args),
+  );
+  historyCache.set(historyKey(userId, args.from, args.to), { at: Date.now(), data });
+  return data;
+}
+function mutating<T>(p: Promise<T>): Promise<T> {
+  return p.then((v) => {
+    invalidateHistoryCache();
+    return v;
+  });
+}
+
 /* ================= public API: server first, local fallback ================= */
 
 async function withFallback<T>(fn: () => Promise<T>, fallback: () => T): Promise<T> {
@@ -903,11 +949,11 @@ export const api = {
       () => callApi<GetMonthResponse>("/api/tasks", { action: "getMonth", userId: uid(), ...args }),
       () => local.getMonth(uid(), args),
     ),
-  getHistory: (args: { from: string; to: string }) =>
-    withFallback(
-      () => callApi<GetHistoryResponse>("/api/tasks", { action: "getHistory", userId: uid(), ...args }),
-      () => local.getHistory(uid(), args),
-    ),
+  getHistory: (args: { from: string; to: string }) => cachedGetHistory(uid(), args),
+  // Synchronous read of the history cache (null when empty or stale) so a
+  // remounting component can render instantly instead of flashing a spinner.
+  getCachedHistory: (args: { from: string; to: string }) =>
+    getCachedHistoryData(uid(), args.from, args.to),
   addProject: (args: { name: string; color?: ProjectColor; link?: string; note?: string; logo?: string | null }) =>
     withFallback(
       () => callApi<{ id: number }>("/api/projects", { action: "add", userId: uid(), ...args }),
@@ -1060,3 +1106,32 @@ export const api = {
       () => local.ensureStarterProjects(uid(), args),
     ),
 };
+
+// Every mutation clears the history cache, so the next getHistory read is
+// fresh instead of serving up to 5 minutes of stale data.
+const MUTATING_KEYS = [
+  "addProject",
+  "updateProject",
+  "setProjectEnded",
+  "deleteProject",
+  "addTask",
+  "updateTask",
+  "deleteTask",
+  "setTaskDone",
+  "setTaskStatus",
+  "setTaskPosted",
+  "setTaskVerified",
+  "setEngagement",
+  "setChatTarget",
+  "setChatSent",
+  "logProjectChat",
+  "setProjectTarget",
+  "setProjectSent",
+  "rolloverDay",
+] as const;
+type MutatingKey = (typeof MUTATING_KEYS)[number];
+for (const key of MUTATING_KEYS) {
+  const orig = api[key] as (...args: never[]) => Promise<unknown>;
+  (api as Record<MutatingKey, (...args: never[]) => Promise<unknown>>)[key] = (...args: never[]) =>
+    mutating(orig(...args));
+}

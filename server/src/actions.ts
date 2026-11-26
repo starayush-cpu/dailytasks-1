@@ -182,6 +182,16 @@ export const Actions = {
         if (!t) continue;
         if (t.recurring === 1 || t.date === c.date) entryFor(c.date).done += 1;
       }
+      // Recurring tasks repeat every day, so every day of the month carries
+      // them in its total — otherwise the calendar shows empty boxes on days
+      // that only have recurring tasks.
+      if (recurring.length > 0) {
+        const [y, m] = args.month.split("-").map(Number);
+        const daysInMonth = new Date(y!, m!, 0).getDate();
+        for (let d = 1; d <= daysInMonth; d++) {
+          entryFor(`${args.month}-${String(d).padStart(2, "0")}`).total += recurring.length;
+        }
+      }
       return {
         days: [...totals.entries()].map(([date, v]) => ({
           date,

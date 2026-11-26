@@ -229,10 +229,6 @@ export default async function handler(req: any, res: any) {
       }
       const out = await withDb(async (db) => {
         const { byId } = await loadProjects(db, userId);
-        const recRes = await db.execute(
-          sql`SELECT COUNT(*)::int AS n FROM tasks WHERE user_id = ${userId} AND repeat = 1`,
-        );
-        const recurringCount = (recRes.rows[0] as { n: number }).n;
         const taskRes = await db.execute(
           sql`SELECT id, repeat, date, project_id FROM tasks WHERE user_id = ${userId} AND (date LIKE ${month + "%"} OR repeat = 1)`,
         );
@@ -248,6 +244,11 @@ export default async function handler(req: any, res: any) {
           const p = t.project_id != null ? byId.get(t.project_id) : undefined;
           return p?.ended === true;
         };
+        // Recurring tasks repeat every day, so every day of the month
+        // carries them in its total — otherwise the calendar shows empty
+        // boxes on days that only have recurring tasks.
+        const activeRecurring = [...taskById.values()].filter((t) => t.repeat === 1 && !isEnded(t)).length;
+        const recurringCount = activeRecurring;
         const totals = new Map<string, { total: number; done: number }>();
         const entryFor = (d: string) => {
           const e = totals.get(d) ?? { total: 0, done: 0 };
@@ -263,6 +264,13 @@ export default async function handler(req: any, res: any) {
           const t = taskById.get(c.task_id);
           if (!t || isEnded(t)) continue;
           if (t.repeat === 1 || t.date === c.date) entryFor(c.date).done += 1;
+        }
+        if (activeRecurring > 0) {
+          const [y, m] = month.split("-").map(Number);
+          const daysInMonth = new Date(y!, m!, 0).getDate();
+          for (let d = 1; d <= daysInMonth; d++) {
+            entryFor(`${month}-${String(d).padStart(2, "0")}`).total += activeRecurring;
+          }
         }
         return {
           days: [...totals.entries()].map(([date, v]) => ({ date, total: v.total, done: v.done })),
