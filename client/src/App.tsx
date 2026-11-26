@@ -304,15 +304,66 @@ function StatusCircle({
 }
 
 function TimePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  // Stored value stays 24h "HH:MM"; the picker shows 12h with an AM/PM toggle.
+  const parts = value.split(":");
+  const h24 = Number(parts[0] ?? 0) || 0;
+  const minute = Number(parts[1] ?? 0) || 0;
+  const ampm = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+
+  const emit = (nextH12: number, nextMinute: number, nextAmpm: "AM" | "PM") => {
+    // 12 AM = 00, 12 PM = 12, 1-11 AM = same, 1-11 PM = +12.
+    const hh = nextAmpm === "AM" ? nextH12 % 12 : (nextH12 % 12) + 12;
+    onChange(`${String(hh).padStart(2, "0")}:${String(nextMinute).padStart(2, "0")}`);
+  };
+
   return (
     <div className="time-picker">
-      <input
-        type="time"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label="Time"
-        step={900}
-      />
+      <div className="time-12h">
+        <select
+          value={h12}
+          onChange={(e) => emit(Number(e.target.value), minute, ampm)}
+          aria-label="Hour"
+        >
+          {Array.from({ length: 12 }, (_, i) => i + 1).map((h) => (
+            <option key={h} value={h}>
+              {h}
+            </option>
+          ))}
+        </select>
+        <span className="time-colon" aria-hidden="true">
+          :
+        </span>
+        <select
+          value={minute}
+          onChange={(e) => emit(h12, Number(e.target.value), ampm)}
+          aria-label="Minute"
+        >
+          {Array.from({ length: 60 }, (_, i) => i).map((m) => (
+            <option key={m} value={m}>
+              {String(m).padStart(2, "0")}
+            </option>
+          ))}
+        </select>
+        <div className="ampm-toggle" role="group" aria-label="AM or PM">
+          <button
+            type="button"
+            className={ampm === "AM" ? "active" : ""}
+            aria-pressed={ampm === "AM"}
+            onClick={() => emit(h12, minute, "AM")}
+          >
+            AM
+          </button>
+          <button
+            type="button"
+            className={ampm === "PM" ? "active" : ""}
+            aria-pressed={ampm === "PM"}
+            onClick={() => emit(h12, minute, "PM")}
+          >
+            PM
+          </button>
+        </div>
+      </div>
       <button type="button" className="time-quick" onClick={() => onChange("09:00")}>
         9 AM
       </button>
