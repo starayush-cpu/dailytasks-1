@@ -1402,6 +1402,12 @@ export function App() {
   const [chatTargetDraft, setChatTargetDraft] = useState("50");
   const announcedRef = useRef<Set<string>>(new Set());
   const toastTimer = useRef<number | null>(null);
+  // Monotonic id of the latest loadDay request. Day loads are async and
+  // Neon response times vary a lot (cold starts), so an older request can
+  // resolve AFTER a newer one; without this guard the stale response
+  // overwrites the selected day's data and the list shows the wrong day
+  // until a hard refresh. Only the latest request may touch state.
+  const loadDaySeq = useRef(0);
 
   const activeUser = users.find((u) => u.id === activeUserId) ?? users[0] ?? null;
   const activeProjects = useMemo(() => (data?.projects ?? []).filter((p) => !p.ended), [data]);
@@ -1429,15 +1435,20 @@ export function App() {
 
   const loadDay = useCallback(
     async (date: string) => {
+      const mySeq = ++loadDaySeq.current;
       setLoading(true);
       try {
         const res = await api.getDay({ date });
+        // A newer day was requested while this one was in flight: drop the
+        // stale response instead of overwriting the selected day's list.
+        if (mySeq !== loadDaySeq.current) return;
         setData(res);
         setChatTargetDraft(String(res.chat.target));
       } catch {
+        if (mySeq !== loadDaySeq.current) return;
         setData(null);
       } finally {
-        setLoading(false);
+        if (mySeq === loadDaySeq.current) setLoading(false);
       }
     },
     [],
