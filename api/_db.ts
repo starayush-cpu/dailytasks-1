@@ -19,10 +19,14 @@ import { drizzle } from "drizzle-orm/neon-http";
 import { sql } from "drizzle-orm";
 
 export type ProjectColor = "blue" | "violet" | "green" | "orange" | "pink" | "teal";
-export type TaskKind = "task" | "post" | "discord";
+export type TaskKind = "task" | "post" | "discord" | "event";
+export type EventRole = "join" | "host";
+export type TaskStatus = "done" | "missed" | "pending";
 
 let db: ReturnType<typeof drizzle> | null = null;
 let schemaReady: Promise<void> | null = null;
+
+export type Db = ReturnType<typeof drizzle>;
 
 export function getDb() {
   const url = process.env.POSTGRES_URL;
@@ -58,15 +62,27 @@ async function ensureSchema(): Promise<void> {
           type TEXT NOT NULL DEFAULT 'task',
           repeat INTEGER NOT NULL DEFAULT 0,
           done INTEGER NOT NULL DEFAULT 0,
-          date TEXT
+          date TEXT,
+          post_link TEXT,
+          details TEXT,
+          event_role TEXT,
+          remind INTEGER NOT NULL DEFAULT 1
         )`);
       await d.execute(sql`
         CREATE TABLE IF NOT EXISTS completions (
           task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
           date TEXT NOT NULL,
           done INTEGER NOT NULL DEFAULT 0,
+          status TEXT,
           PRIMARY KEY (task_id, date)
         )`);
+      // Columns added after the first version: databases created by the
+      // earlier deploy get them here instead of a manual migration.
+      await d.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS post_link TEXT`);
+      await d.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS details TEXT`);
+      await d.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS event_role TEXT`);
+      await d.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind INTEGER NOT NULL DEFAULT 1`);
+      await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS status TEXT`);
       await d.execute(sql`
         CREATE TABLE IF NOT EXISTS chat_days (
           date TEXT PRIMARY KEY,

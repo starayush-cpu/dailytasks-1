@@ -5,7 +5,7 @@
 // client/dist/index.html from client/index.html with the built asset paths.
 
 import tailwindPlugin from "bun-plugin-tailwind";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,4 +44,14 @@ html = html.replace('<script src="./src/main.tsx" type="module"></script>', buil
 
 mkdirSync(outdir, { recursive: true });
 writeFileSync(join(outdir, "index.html"), html);
+
+// Copy public assets (profile photo, project logos) into the build output.
+const publicDir = join(root, "public");
+try {
+  for (const f of readdirSync(publicDir)) {
+    copyFileSync(join(publicDir, f), join(outdir, f));
+  }
+} catch {
+  // No public dir: the app falls back to the monogram avatar / color dots.
+}
 console.log(`built client/dist/${jsName}${cssName ? ` + ${cssName}` : ""} + index.html`);

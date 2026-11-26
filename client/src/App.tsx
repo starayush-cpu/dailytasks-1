@@ -7,6 +7,7 @@ type DayTask = DayData["tasks"][number];
 type Project = DayData["projects"][number];
 type ProjectColor = Project["color"];
 type TaskKind = DayTask["kind"];
+type EventRole = NonNullable<DayTask["eventRole"]>;
 
 const COLOR_ORDER: ProjectColor[] = ["blue", "violet", "green", "orange", "pink", "teal"];
 const COLOR_DOT: Record<ProjectColor, string> = {
@@ -29,6 +30,7 @@ const KIND_LABEL: Record<TaskKind, string> = {
   task: "TASK",
   post: "POST",
   discord: "DISCORD",
+  event: "EVENT",
 };
 
 function keyOf(d: Date): string {
@@ -62,6 +64,91 @@ function fmtTime(t: string | null): string {
 }
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : "Something went wrong. Try again.";
+}
+
+/* ---- Phone calendar reminders (.ics download + Google Calendar) ---- */
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+function icsEscape(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+}
+function icsStamp(dateISO: string, timeHHMM: string): string {
+  const [y = 1970, m = 1, d = 1] = dateISO.split("-").map(Number);
+  const [hh = 0, mm = 0] = timeHHMM.split(":").map(Number);
+  return `${y}${pad2(m)}${pad2(d)}T${pad2(hh)}${pad2(mm)}00`;
+}
+function shiftTime(timeHHMM: string, mins: number): string {
+  const [h = 0, m = 0] = timeHHMM.split(":").map(Number);
+  const total = (h * 60 + m + mins + 24 * 60) % (24 * 60);
+  return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
+}
+function gcalStamp(d: Date): string {
+  return d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+}
+function calDescription(task: DayTask): string {
+  return [
+    task.details,
+    task.kind === "event" ? `Event role: ${task.eventRole ?? "join"}` : null,
+    task.postLink ? `Post: ${task.postLink}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
+function buildIcs(task: DayTask, dateISO: string): string {
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Daily Hub//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "BEGIN:VEVENT",
+    `UID:${task.id}-${dateISO}@daily-hub`,
+    `DTSTAMP:${gcalStamp(new Date())}`,
+    ...(task.time
+      ? [`DTSTART:${icsStamp(dateISO, task.time)}`, `DTEND:${icsStamp(dateISO, shiftTime(task.time, 30))}`]
+      : [
+          `DTSTART;VALUE=DATE:${dateISO.replace(/-/g, "")}`,
+          `DTEND;VALUE=DATE:${addDays(dateISO, 1).replace(/-/g, "")}`,
+        ]),
+    `SUMMARY:${icsEscape(task.title)}`,
+    `DESCRIPTION:${icsEscape(calDescription(task))}`,
+    "BEGIN:VALARM",
+    "TRIGGER:-PT0M",
+    "ACTION:DISPLAY",
+    `DESCRIPTION:${icsEscape(task.title)}`,
+    "END:VALARM",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+  return lines.join("\r\n");
+}
+function googleCalUrl(task: DayTask, dateISO: string): string {
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: task.title,
+    details: calDescription(task),
+    ctz: "Asia/Kolkata",
+  });
+  if (task.time) {
+    const start = new Date(`${dateISO}T${task.time}:00`);
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    params.set("dates", `${gcalStamp(start)}/${gcalStamp(end)}`);
+  } else {
+    params.set("dates", `${dateISO.replace(/-/g, "")}/${addDays(dateISO, 1).replace(/-/g, "")}`);
+  }
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+function downloadIcs(task: DayTask, dateISO: string) {
+  const blob = new Blob([buildIcs(task, dateISO)], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${task.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "task"}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 function LogoMark({ compact }: { compact?: boolean }) {
@@ -111,14 +198,117 @@ function CheckCircle({
   );
 }
 
+function Avatar({ size }: { size: "md" | "lg" }) {
+  const [failed, setFailed] = useState(false);
+  const cls = size === "lg" ? "h-12 w-12 text-xl" : "h-11 w-11 text-lg";
+  if (failed) {
+    return (
+      <div className={`font-display grid ${cls} shrink-0 place-items-center rounded-full bg-gradient-to-br from-teal-300 via-sky-400 to-violet-500 font-bold text-white shadow-lg`}>
+        A
+      </div>
+    );
+  }
+  return (
+    <img
+      src="./ayush-pfp.jpg"
+      alt="Ayush"
+      onError={() => setFailed(true)}
+      className={`${cls} shrink-0 rounded-full object-cover shadow-lg ring-2 ring-white/25`}
+    />
+  );
+}
+
+const PROJECT_LOGOS: Record<string, string> = {
+  fermah: "./fermah-logo.webp",
+  dlicom: "./dlicom-logo.svg",
+  primus: "./primus-logo.png",
+};
+
+function ProjectLogo({ name, color }: { name: string; color: ProjectColor }) {
+  const src = PROJECT_LOGOS[name.toLowerCase()];
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${COLOR_DOT[color]}`} aria-hidden="true" />;
+  }
+  return (
+    <img
+      src={src}
+      alt={`${name} logo`}
+      onError={() => setFailed(true)}
+      className="h-6 w-6 shrink-0 rounded-md bg-white/10 object-contain ring-1 ring-white/20"
+    />
+  );
+}
+
+/* ================= Voice announcements (Web Speech API) ================= */
+
+function pickVoice(): SpeechSynthesisVoice | null {
+  if (typeof speechSynthesis === "undefined") return null;
+  const voices = speechSynthesis.getVoices();
+  if (voices.length === 0) return null;
+  const byName = (re: RegExp) => voices.find((v) => re.test(v.name));
+  return (
+    byName(/Google US English/i) ??
+    voices.find((v) => /^en[-_]US$/i.test(v.lang) && /natural|neural|samantha|aria|guy|jenny/i.test(v.name)) ??
+    voices.find((v) => /^en[-_]US$/i.test(v.lang)) ??
+    voices.find((v) => /^en[-_]IN$/i.test(v.lang)) ??
+    voices.find((v) => /^en/i.test(v.lang)) ??
+    null
+  );
+}
+
+function speak(text: string) {
+  if (typeof speechSynthesis === "undefined") return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  const voice = pickVoice();
+  if (voice) {
+    u.voice = voice;
+    u.lang = voice.lang;
+  } else {
+    u.lang = "en-US";
+  }
+  u.rate = 1;
+  u.pitch = 1;
+  speechSynthesis.speak(u);
+}
+
+function announceText(t: DayTask, chat: { target: number; sent: number }): string {
+  if (t.kind === "post") {
+    const about = t.projectName ? ` about ${t.projectName}` : "";
+    const hoursLeft = Math.max(0, 23 - new Date().getHours());
+    return `Ayush, you have not posted${about} today, ${hoursLeft} ${hoursLeft === 1 ? "hour" : "hours"} left.`;
+  }
+  if (t.kind === "discord") {
+    const remaining = Math.max(0, chat.target - chat.sent);
+    const chatPart =
+      remaining > 0
+        ? ` You still have ${remaining} chats to go today.`
+        : ` You have reached your chat target today.`;
+    return `Ayush, time for ${t.title}.${chatPart}`;
+  }
+  return `Ayush, time for ${t.title}.`;
+}
+
 export function App() {
   const queryClient = useQueryClient();
   const todayKey = useMemo(() => keyOf(new Date()), []);
   const [date, setDate] = useState(todayKey);
-  const [view, setView] = useState<"schedule" | "calendar">("schedule");
+  const [view, setView] = useState<"schedule" | "calendar" | "history">("schedule");
   const [monthCursor, setMonthCursor] = useState(todayKey.slice(0, 7));
   const [notice, setNotice] = useState<string | null>(null);
   const discordRef = useRef<HTMLElement | null>(null);
+  const [remindersOn, setRemindersOn] = useState(
+    () => typeof Notification !== "undefined" && Notification.permission === "granted",
+  );
+  const [soundOn, setSoundOn] = useState(() => {
+    try {
+      return localStorage.getItem("daily-hub-sound") === "on";
+    } catch {
+      return false;
+    }
+  });
+  const notifiedRef = useRef<Set<string>>(new Set());
 
   // Lazy daily rollover so a fresh day is prepared on open.
   useEffect(() => {
@@ -143,15 +333,88 @@ export function App() {
     queryFn: () => api.getMonth({ month: monthCursor }),
     enabled: view === "calendar",
   });
+  const today = useQuery({
+    queryKey: ["day", todayKey],
+    queryFn: () => api.getDay({ date: todayKey }),
+  });
+
+  // Reminder engine: every minute while the site is open, fire a browser
+  // notification and/or a voice announcement for each of today's pending
+  // tasks whose set time has arrived (and that opted into reminders).
+  useEffect(() => {
+    if (!remindersOn && !soundOn) return;
+    const check = () => {
+      const data = today.data;
+      if (!data) return;
+      const now = new Date();
+      const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      for (const t of data.tasks) {
+        if (!t.time || t.time !== hhmm) continue;
+        if (t.status !== "pending" || !t.remind) continue;
+        const key = `${todayKey}:${t.id}`;
+        if (notifiedRef.current.has(key)) continue;
+        notifiedRef.current.add(key);
+        if (remindersOn && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try {
+            new Notification(`Time for: ${t.title}`, { body: `${fmtTime(t.time)} · Daily Hub` });
+          } catch {
+            // Notifications can throw if the document is not focused enough; ignore.
+          }
+        }
+        if (soundOn) speak(announceText(t, data.chat));
+      }
+    };
+    check();
+    const id = window.setInterval(check, 60000);
+    return () => window.clearInterval(id);
+  }, [today.data, remindersOn, soundOn, todayKey]);
+
+  const enableReminders = async () => {
+    if (typeof Notification === "undefined") {
+      setNotice("This browser does not support notifications.");
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    setRemindersOn(perm === "granted");
+    if (perm === "denied") {
+      setNotice("Notifications are blocked for this site. Allow them in your browser settings to get reminders.");
+    }
+  };
+
+  const toggleSound = () => {
+    const next = !soundOn;
+    setSoundOn(next);
+    try {
+      localStorage.setItem("daily-hub-sound", next ? "on" : "off");
+    } catch {
+      // Ignore storage errors.
+    }
+    if (next) speak("Voice reminders are on, Ayush.");
+    else if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+  };
+
+  const testVoice = () => speak("Ayush, you have not posted about Fermah today, 2 hours left.");
+
+  const nextUp = useMemo(() => {
+    if (!today.data) return null;
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const upcoming = today.data.tasks
+      .filter((t) => t.status === "pending" && t.time && t.time > hhmm)
+      .sort((a, b) => (a.time ?? "").localeCompare(b.time ?? ""));
+    return upcoming[0] ?? null;
+  }, [today.data]);
+
+  const notifBlocked = typeof Notification !== "undefined" && Notification.permission === "denied";
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["day"] });
     queryClient.invalidateQueries({ queryKey: ["month"] });
   };
 
-  const toggleTask = useMutation({
-    mutationFn: async (t: DayTask) =>
-      await api.setTaskDone({ taskId: t.id, date, done: !t.done }),
+  const setTaskStatus = useMutation({
+    mutationFn: async (args: { t: DayTask; status: "done" | "missed" | null }) =>
+      await api.setTaskStatus({ taskId: args.t.id, date, status: args.status }),
     onSuccess: refresh,
     onError: (e) => setNotice(errText(e)),
   });
@@ -172,14 +435,12 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen">
-      <div className="mx-auto max-w-[1460px] px-3 pb-10 sm:px-5">
+    <div className="min-h-screen overflow-x-clip">
+      <div className="mx-auto max-w-[1460px] px-3 pb-24 pt-4 sm:px-5 lg:pb-10">
         {/* Compact profile bar (phones) */}
         <div className="glass mt-3 flex items-center gap-3 px-4 py-3 lg:hidden">
           <LogoMark compact />
-          <div className="font-display grid h-11 w-11 shrink-0 place-items-center rounded-full bg-gradient-to-br from-teal-300 via-sky-400 to-violet-500 text-lg font-bold text-white shadow-lg">
-            A
-          </div>
+          <Avatar size="md" />
           <div className="min-w-0">
             <p className="font-display truncate text-base font-bold leading-tight">Ayush</p>
             <p className="truncate text-xs text-[var(--dim)]">starayush · @_star_ayush</p>
@@ -200,9 +461,7 @@ export function App() {
                 <LogoMark />
               </div>
               <div className="flex items-center gap-3">
-                <div className="font-display grid h-12 w-12 shrink-0 place-items-center rounded-full bg-gradient-to-br from-teal-300 via-sky-400 to-violet-500 text-xl font-bold text-white shadow-lg">
-                  A
-                </div>
+                <Avatar size="lg" />
                 <div className="min-w-0">
                   <p className="font-display truncate text-lg font-bold leading-tight">Ayush</p>
                   <p className="truncate text-xs text-[var(--dim)]">starayush · @_star_ayush</p>
@@ -235,6 +494,13 @@ export function App() {
                   className={`flex min-h-10 items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold ${view === "calendar" ? "bg-white/15 text-white" : "text-[var(--dim)] hover:bg-white/8 hover:text-white"}`}
                 >
                   <span aria-hidden="true">▤</span> Calendar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView("history")}
+                  className={`flex min-h-10 items-center gap-3 rounded-xl px-3 text-left text-sm font-semibold ${view === "history" ? "bg-white/15 text-white" : "text-[var(--dim)] hover:bg-white/8 hover:text-white"}`}
+                >
+                  <span aria-hidden="true">◷</span> History
                 </button>
                 <button
                   type="button"
@@ -291,6 +557,33 @@ export function App() {
                     ›
                   </button>
                 </div>
+              </div>
+
+              {/* Reminders + voice */}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={enableReminders}
+                  disabled={remindersOn}
+                  className="glass-soft min-h-9 px-3 text-xs font-bold hover:bg-white/12 disabled:opacity-70"
+                >
+                  {remindersOn ? "🔔 Reminders on" : notifBlocked ? "🔕 Reminders blocked" : "🔔 Enable reminders"}
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleSound}
+                  className="glass-soft min-h-9 px-3 text-xs font-bold hover:bg-white/12"
+                >
+                  {soundOn ? "🔊 Sound on" : "🔇 Sound off"}
+                </button>
+                <button
+                  type="button"
+                  onClick={testVoice}
+                  disabled={!soundOn}
+                  className="glass-soft min-h-9 px-3 text-xs font-bold hover:bg-white/12 disabled:opacity-40"
+                >
+                  ▶ Test voice
+                </button>
               </div>
 
               {/* Week strip */}
@@ -363,6 +656,14 @@ export function App() {
                     setView("schedule");
                   }}
                 />
+              ) : view === "history" ? (
+                <HistoryView
+                  todayKey={todayKey}
+                  onPick={(k) => {
+                    goDate(k);
+                    setView("schedule");
+                  }}
+                />
               ) : day.isPending ? (
                 <p className="py-14 text-center text-sm text-[var(--dim)]">Loading your day…</p>
               ) : day.isError ? (
@@ -378,6 +679,17 @@ export function App() {
                 </div>
               ) : (
                 <>
+                  {isToday && nextUp && (
+                    <div className="glass-soft mt-4 flex items-center gap-3 px-4 py-3">
+                      <span aria-hidden="true">⏰</span>
+                      <p className="text-sm">
+                        <span className="font-bold">Up next: {nextUp.title}</span>{" "}
+                        <span className="text-[var(--dim)]">
+                          at {fmtTime(nextUp.time)} · {KIND_LABEL[nextUp.kind]}
+                        </span>
+                      </p>
+                    </div>
+                  )}
                   <p className="mt-6 text-xs font-bold uppercase tracking-[0.16em] text-[var(--dim)]">
                     Daily tasks &amp; posts · tap the circle when done
                   </p>
@@ -397,7 +709,7 @@ export function App() {
                             key={t.id}
                             task={t}
                             date={date}
-                            onToggle={() => toggleTask.mutate(t)}
+                            onSetStatus={(status) => setTaskStatus.mutate({ t, status })}
                             onChanged={refresh}
                             onError={setNotice}
                             projects={projects}
@@ -452,6 +764,76 @@ export function App() {
             </p>
           </section>
         </div>
+
+        {/* Mobile bottom nav (phones): sidebar becomes a thumb bar */}
+        <nav
+          className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0a1626]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
+          aria-label="Sections"
+        >
+          <div className="grid grid-cols-5">
+            <button
+              type="button"
+              onClick={() => {
+                setView("schedule");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              className={`flex min-h-[54px] flex-col items-center justify-center gap-0.5 text-[11px] font-bold ${
+                view === "schedule" ? "text-orange-300" : "text-slate-400"
+              }`}
+            >
+              <span className="text-base leading-none" aria-hidden="true">⌂</span>
+              Dashboard
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setView("schedule");
+                setTimeout(() => {
+                  document.getElementById("add-task-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  document.getElementById("add-task-title")?.focus({ preventScroll: true });
+                }, 120);
+              }}
+              className="flex min-h-[54px] flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400"
+            >
+              <span className="text-base leading-none" aria-hidden="true">＋</span>
+              Add task
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setView("calendar");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              className={`flex min-h-[54px] flex-col items-center justify-center gap-0.5 text-[11px] font-bold ${
+                view === "calendar" ? "text-orange-300" : "text-slate-400"
+              }`}
+            >
+              <span className="text-base leading-none" aria-hidden="true">▦</span>
+              Calendar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setView("history");
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              className={`flex min-h-[54px] flex-col items-center justify-center gap-0.5 text-[11px] font-bold ${
+                view === "history" ? "text-orange-300" : "text-slate-400"
+              }`}
+            >
+              <span className="text-base leading-none" aria-hidden="true">↺</span>
+              History
+            </button>
+            <button
+              type="button"
+              onClick={scrollToDiscord}
+              className="flex min-h-[54px] flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400"
+            >
+              <span className="text-base leading-none" aria-hidden="true">💬</span>
+              Discord
+            </button>
+          </div>
+        </nav>
       </div>
     </div>
   );
@@ -462,23 +844,45 @@ export function App() {
 function TaskRow({
   task,
   date,
-  onToggle,
+  onSetStatus,
   onChanged,
   onError,
   projects,
 }: {
   task: DayTask;
   date: string;
-  onToggle: () => void;
+  onSetStatus: (status: "done" | "missed" | null) => void;
   onChanged: () => void;
   onError: (m: string | null) => void;
   projects: Project[];
 }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showLinkEditor, setShowLinkEditor] = useState(false);
+  const [showCal, setShowCal] = useState(false);
+  const [linkDraft, setLinkDraft] = useState(task.postLink ?? "");
 
   const del = useMutation({
     mutationFn: async () => await api.deleteTask({ id: task.id }),
+    onSuccess: onChanged,
+    onError: (e) => onError(errText(e)),
+  });
+
+  const updateTask = useMutation({
+    mutationFn: async (patch: Partial<Pick<DayTask, "postLink" | "remind">>) =>
+      await api.updateTask({
+        id: task.id,
+        title: task.title,
+        kind: task.kind,
+        time: task.time,
+        projectId: task.projectId,
+        date: task.recurring ? null : date,
+        recurring: task.recurring,
+        postLink: patch.postLink !== undefined ? patch.postLink : task.postLink,
+        details: task.details,
+        eventRole: task.eventRole,
+        remind: patch.remind !== undefined ? patch.remind : task.remind,
+      }),
     onSuccess: onChanged,
     onError: (e) => onError(errText(e)),
   });
@@ -487,7 +891,7 @@ function TaskRow({
     return (
       <li className="relative pl-12">
         <div className="absolute left-0 top-3">
-          <CheckCircle done={task.done} onToggle={onToggle} label={`Mark ${task.title} ${task.done ? "not done" : "done"}`} />
+          <CheckCircle done={task.done} onToggle={() => onSetStatus(task.status === "done" ? null : "done")} label={`Mark ${task.title} ${task.done ? "not done" : "done"}`} />
         </div>
         <TaskForm
           date={date}
@@ -505,29 +909,39 @@ function TaskRow({
   }
 
   const isPost = task.kind === "post";
+  const isMissed = task.status === "missed";
+  const cardClass = isMissed
+    ? "border-red-400/50 bg-red-500/12 backdrop-blur-md"
+    : isPost
+      ? "border-white/25 bg-[linear-gradient(115deg,rgba(22,163,74,0.85),rgba(2,132,199,0.9))] shadow-[0_14px_35px_rgba(2,132,199,0.35)]"
+      : task.kind === "discord"
+        ? "border-[#5865f2]/50 bg-[#5865f2]/15 backdrop-blur-md"
+        : task.kind === "event"
+          ? "border-violet-400/50 bg-violet-500/15 backdrop-blur-md"
+          : "border-white/12 bg-white/6 backdrop-blur-md";
+
   return (
     <li className="relative pl-12">
       <div className="absolute left-0 top-3 z-10">
-        <CheckCircle done={task.done} onToggle={onToggle} label={`Mark ${task.title} ${task.done ? "not done" : "done"}`} />
+        <CheckCircle done={task.done} onToggle={() => onSetStatus(task.status === "done" ? null : "done")} label={`Mark ${task.title} ${task.done ? "not done" : "done"}`} />
       </div>
       <div
-        className={`rounded-2xl border p-3.5 sm:p-4 ${
-          isPost
-            ? "border-white/25 bg-[linear-gradient(115deg,rgba(22,163,74,0.85),rgba(2,132,199,0.9))] shadow-[0_14px_35px_rgba(2,132,199,0.35)]"
-            : task.kind === "discord"
-              ? "border-[#5865f2]/50 bg-[#5865f2]/15 backdrop-blur-md"
-              : "border-white/12 bg-white/6 backdrop-blur-md"
-        } ${task.done ? "opacity-75" : ""}`}
+        className={`rounded-2xl border p-3.5 sm:p-4 ${cardClass} ${task.done ? "opacity-75" : ""} ${isMissed ? "opacity-90" : ""}`}
       >
-        <div className="flex items-start gap-3">
+        <div className="flex flex-col gap-2.5 sm:flex-row sm:items-start sm:gap-3">
           <div className="min-w-0 flex-1">
             <p className={`text-xs font-bold tracking-wide ${isPost ? "text-white/85" : "text-[var(--dim)]"}`}>
               {fmtTime(task.time)} | {KIND_LABEL[task.kind]}
               {task.recurring ? " · EVERY DAY" : ""}
             </p>
-            <p className={`font-display mt-0.5 text-lg font-bold leading-snug ${task.done ? "line-through decoration-2" : ""}`}>
+            <p className={`font-display mt-0.5 text-lg font-bold leading-snug ${task.done ? "line-through decoration-2" : ""} ${isMissed ? "text-red-200" : ""}`}>
               {task.title}
             </p>
+            {task.details && (
+              <p className={`mt-1 text-sm leading-relaxed ${isPost ? "text-white/85" : "text-[var(--dim)]"}`}>
+                {task.details}
+              </p>
+            )}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               {task.projectName && task.projectColor && (
                 <span className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${isPost ? "border-white/40 bg-white/15 text-white" : COLOR_CHIP[task.projectColor]}`}>
@@ -544,13 +958,128 @@ function TaskRow({
                   Discord session
                 </span>
               )}
+              {task.kind === "event" && (
+                <span className="rounded-full bg-violet-400/25 px-2 py-0.5 text-[11px] font-bold text-violet-100">
+                  {task.eventRole === "host" ? "Hosting" : "Joining"}
+                </span>
+              )}
+              {isMissed && (
+                <span className="rounded-full bg-red-500/80 px-2 py-0.5 text-[11px] font-bold text-white">
+                  Missed ✕
+                </span>
+              )}
+              {task.postLink && (
+                <a
+                  href={task.postLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`break-all rounded-full px-2 py-0.5 text-[11px] font-bold underline ${isPost ? "bg-white/15 text-white" : "bg-white/10 text-sky-200"}`}
+                >
+                  View post ↗
+                </a>
+              )}
             </div>
-          </div>
-          <div className="flex shrink-0 flex-col items-end gap-1.5">
-            {isPost && (
-              <CheckCircle done={task.done} onToggle={onToggle} label={`Mark post ${task.title} ${task.done ? "not posted" : "posted"}`} large />
+            {showLinkEditor && (
+              <form
+                className="mt-2.5 flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  updateTask.mutate({ postLink: linkDraft.trim() ? linkDraft.trim() : null });
+                  setShowLinkEditor(false);
+                }}
+              >
+                <label htmlFor={`post-link-${task.id}`} className="sr-only">
+                  Post link
+                </label>
+                <input
+                  id={`post-link-${task.id}`}
+                  type="url"
+                  className="field"
+                  placeholder="Paste the post URL…"
+                  value={linkDraft}
+                  onChange={(e) => setLinkDraft(e.target.value)}
+                />
+                <button
+                  type="submit"
+                  disabled={updateTask.isPending}
+                  className="min-h-10 shrink-0 rounded-xl bg-gradient-to-r from-teal-400 to-sky-500 px-3 text-sm font-bold text-[#062a33] disabled:opacity-60"
+                >
+                  Save
+                </button>
+              </form>
             )}
-            <div className="flex gap-1">
+            {showCal && (
+              <div className="mt-2.5 rounded-xl border border-white/15 bg-black/25 p-3">
+                <p className="text-xs font-bold tracking-wide text-white/90">Set phone reminder</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-white/70">
+                  Adds this task to your phone calendar with a reminder at{" "}
+                  {task.time ? fmtTime(task.time) : "its set time"} on {longDate(date)}.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => downloadIcs(task, date)}
+                    className="min-h-10 rounded-xl bg-gradient-to-r from-teal-400 to-sky-500 px-3 text-sm font-bold text-[#062a33]"
+                  >
+                    Download .ics file
+                  </button>
+                  <a
+                    href={googleCalUrl(task, date)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="grid min-h-10 place-items-center rounded-xl border border-white/25 bg-white/10 px-3 text-sm font-bold text-white hover:bg-white/20"
+                  >
+                    Add to Google Calendar ↗
+                  </a>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="flex shrink-0 flex-col items-start gap-1.5 sm:items-end">
+            {isPost && (
+              <CheckCircle done={task.done} onToggle={() => onSetStatus(task.status === "done" ? null : "done")} label={`Mark post ${task.title} ${task.done ? "not posted" : "posted"}`} large />
+            )}
+            <div className="flex flex-wrap gap-1">
+              <button
+                type="button"
+                aria-label={isMissed ? `Clear missed for ${task.title}` : `Mark ${task.title} missed`}
+                aria-pressed={isMissed}
+                onClick={() => onSetStatus(isMissed ? null : "missed")}
+                className={`grid h-8 w-8 place-items-center rounded-lg text-sm ${isMissed ? "bg-red-500/85 text-white" : isPost ? "bg-white/15 text-white hover:bg-white/25" : "bg-white/8 text-[var(--dim)] hover:bg-red-500/40 hover:text-white"}`}
+              >
+                ✕
+              </button>
+              <button
+                type="button"
+                aria-label={`Post link for ${task.title}`}
+                aria-pressed={showLinkEditor}
+                onClick={() => {
+                  setLinkDraft(task.postLink ?? "");
+                  setShowLinkEditor(!showLinkEditor);
+                }}
+                className={`grid h-8 w-8 place-items-center rounded-lg text-sm ${isPost ? "bg-white/15 text-white hover:bg-white/25" : "bg-white/8 text-[var(--dim)] hover:bg-white/15 hover:text-white"}`}
+              >
+                🔗
+              </button>
+              <button
+                type="button"
+                aria-label={`${task.remind ? "Turn off" : "Turn on"} reminder for ${task.title}`}
+                aria-pressed={task.remind}
+                onClick={() => updateTask.mutate({ remind: !task.remind })}
+                className={`grid h-8 w-8 place-items-center rounded-lg text-sm ${isPost ? "bg-white/15 text-white hover:bg-white/25" : "bg-white/8 text-[var(--dim)] hover:bg-white/15 hover:text-white"} ${task.remind ? "" : "opacity-50"}`}
+              >
+                {task.remind ? "🔔" : "🔕"}
+              </button>
+              <button
+                type="button"
+                aria-label={`Set phone reminder for ${task.title}`}
+                aria-pressed={showCal}
+                title="Set phone reminder"
+                onClick={() => setShowCal(!showCal)}
+                className={`grid h-8 w-8 place-items-center rounded-lg text-sm ${isPost ? "bg-white/15 text-white hover:bg-white/25" : "bg-white/8 text-[var(--dim)] hover:bg-white/15 hover:text-white"}`}
+              >
+                📅
+              </button>
               <button
                 type="button"
                 aria-label={`Edit ${task.title}`}
@@ -608,6 +1137,10 @@ function TaskForm({
   const [time, setTime] = useState(existing?.time ?? "");
   const [projectId, setProjectId] = useState<string>(existing?.projectId ? String(existing.projectId) : "");
   const [repeat, setRepeat] = useState<"day" | "daily">(existing?.recurring ? "daily" : "day");
+  const [postLink, setPostLink] = useState(existing?.postLink ?? "");
+  const [details, setDetails] = useState(existing?.details ?? "");
+  const [eventRole, setEventRole] = useState<EventRole | "">((existing?.eventRole ?? "") as EventRole | "");
+  const [remind, setRemind] = useState(existing?.remind ?? true);
   const [titleError, setTitleError] = useState<string | null>(null);
 
   const save = useMutation({
@@ -618,6 +1151,10 @@ function TaskForm({
         time: time ? time : null,
         projectId: projectId ? Number(projectId) : null,
         recurring: repeat === "daily",
+        postLink: postLink.trim() ? postLink.trim() : null,
+        details: details.trim() ? details.trim() : null,
+        eventRole: kind === "event" && (eventRole === "join" || eventRole === "host") ? eventRole : null,
+        remind,
       };
       return existing
         ? await api.updateTask({ id: existing.id, ...payload, date: repeat === "daily" ? null : date })
@@ -642,16 +1179,18 @@ function TaskForm({
     save.mutate();
   };
 
+  const uid = (field: string) => `${existing ? "edit" : "new"}-${field}`;
+
   return (
-    <form onSubmit={submit} className="glass-soft mt-4 p-3.5 sm:p-4" aria-label={existing ? "Edit item" : "Add an item"}>
+    <form onSubmit={submit} id={existing ? undefined : "add-task-form"} className="glass-soft mt-4 p-3.5 sm:p-4" aria-label={existing ? "Edit item" : "Add an item"}>
       <p className="font-display text-sm font-bold">{existing ? "Edit item" : "Add to this day"}</p>
       <div className="mt-2.5 flex flex-col gap-2.5">
         <div>
-          <label htmlFor={existing ? "edit-title" : "new-title"} className="sr-only">
+          <label htmlFor={existing ? uid("title") : "add-task-title"} className="sr-only">
             Title
           </label>
           <input
-            id={existing ? "edit-title" : "new-title"}
+            id={existing ? uid("title") : "add-task-title"}
             maxLength={120}
             className="field"
             placeholder="e.g. Fermah chat session, X post, Design review…"
@@ -662,11 +1201,11 @@ function TaskForm({
         </div>
         <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
           <div>
-            <label htmlFor={existing ? "edit-time" : "new-time"} className="mb-1 block text-xs font-bold text-[var(--dim)]">
+            <label htmlFor={uid("time")} className="mb-1 block text-xs font-bold text-[var(--dim)]">
               Time
             </label>
             <input
-              id={existing ? "edit-time" : "new-time"}
+              id={uid("time")}
               type="time"
               className="field"
               value={time}
@@ -674,11 +1213,11 @@ function TaskForm({
             />
           </div>
           <div>
-            <label htmlFor={existing ? "edit-kind" : "new-kind"} className="mb-1 block text-xs font-bold text-[var(--dim)]">
+            <label htmlFor={uid("kind")} className="mb-1 block text-xs font-bold text-[var(--dim)]">
               Type
             </label>
             <select
-              id={existing ? "edit-kind" : "new-kind"}
+              id={uid("kind")}
               className="field"
               value={kind}
               onChange={(e) => setKind(e.target.value as TaskKind)}
@@ -686,14 +1225,15 @@ function TaskForm({
               <option value="task">Task</option>
               <option value="post">Post</option>
               <option value="discord">Discord</option>
+              <option value="event">Event</option>
             </select>
           </div>
           <div>
-            <label htmlFor={existing ? "edit-project" : "new-project"} className="mb-1 block text-xs font-bold text-[var(--dim)]">
+            <label htmlFor={uid("project")} className="mb-1 block text-xs font-bold text-[var(--dim)]">
               Project
             </label>
             <select
-              id={existing ? "edit-project" : "new-project"}
+              id={uid("project")}
               className="field"
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
@@ -707,11 +1247,11 @@ function TaskForm({
             </select>
           </div>
           <div>
-            <label htmlFor={existing ? "edit-repeat" : "new-repeat"} className="mb-1 block text-xs font-bold text-[var(--dim)]">
+            <label htmlFor={uid("repeat")} className="mb-1 block text-xs font-bold text-[var(--dim)]">
               Repeat
             </label>
             <select
-              id={existing ? "edit-repeat" : "new-repeat"}
+              id={uid("repeat")}
               className="field"
               value={repeat}
               onChange={(e) => setRepeat(e.target.value as "day" | "daily")}
@@ -720,6 +1260,61 @@ function TaskForm({
               <option value="daily">Every day</option>
             </select>
           </div>
+        </div>
+        <div>
+          <label htmlFor={uid("post-link")} className="mb-1 block text-xs font-bold text-[var(--dim)]">
+            Post link (optional)
+          </label>
+          <input
+            id={uid("post-link")}
+            type="url"
+            maxLength={500}
+            className="field"
+            placeholder="https://x.com/.../status/... — paste after you post"
+            value={postLink}
+            onChange={(e) => setPostLink(e.target.value)}
+          />
+        </div>
+        <div>
+          <label htmlFor={uid("details")} className="mb-1 block text-xs font-bold text-[var(--dim)]">
+            Details (optional)
+          </label>
+          <input
+            id={uid("details")}
+            maxLength={500}
+            className="field"
+            placeholder="Timing, notes, what to say…"
+            value={details}
+            onChange={(e) => setDetails(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {kind === "event" && (
+            <div className="min-w-40 flex-1">
+              <label htmlFor={uid("event-role")} className="mb-1 block text-xs font-bold text-[var(--dim)]">
+                Event role
+              </label>
+              <select
+                id={uid("event-role")}
+                className="field"
+                value={eventRole}
+                onChange={(e) => setEventRole(e.target.value as EventRole | "")}
+              >
+                <option value="">Pick one…</option>
+                <option value="join">Join</option>
+                <option value="host">Host</option>
+              </select>
+            </div>
+          )}
+          <label className="flex min-h-9 cursor-pointer items-center gap-2 text-sm font-semibold">
+            <input
+              type="checkbox"
+              checked={remind}
+              onChange={(e) => setRemind(e.target.checked)}
+              className="h-5 w-5 accent-teal-400"
+            />
+            Remind me at this time
+          </label>
         </div>
         <div className="flex gap-2">
           <button
@@ -782,7 +1377,7 @@ function ProjectsPanel({
               </li>
             ) : (
               <li key={p.id} className="group flex items-center gap-2">
-                <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${COLOR_DOT[p.color]}`} aria-hidden="true" />
+                <ProjectLogo name={p.name} color={p.color} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-bold">#{p.name}</span>
                   {p.note && <span className="block truncate text-xs text-[var(--dim)]">{p.note}</span>}
@@ -990,6 +1585,144 @@ function ProjectForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/* ================= History ================= */
+
+function HistoryView({
+  todayKey,
+  onPick,
+}: {
+  todayKey: string;
+  onPick: (k: string) => void;
+}) {
+  const [endOffset, setEndOffset] = useState(0);
+  const end = addDays(todayKey, -endOffset * 30);
+  const start = addDays(end, -29);
+  const hist = useQuery({
+    queryKey: ["history", start, end],
+    queryFn: () => api.getHistory({ from: start, to: end }),
+  });
+
+  const days = useMemo(() => [...(hist.data?.days ?? [])].reverse(), [hist.data]);
+
+  return (
+    <div className="mt-5">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="font-display text-lg font-bold">History</h2>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            aria-label="Older days"
+            onClick={() => setEndOffset((n) => n + 1)}
+            className="glass-soft min-h-9 px-3 text-sm font-bold hover:bg-white/12"
+          >
+            ← Older
+          </button>
+          <button
+            type="button"
+            aria-label="Newer days"
+            disabled={endOffset === 0}
+            onClick={() => setEndOffset((n) => Math.max(0, n - 1))}
+            className="glass-soft min-h-9 px-3 text-sm font-bold hover:bg-white/12 disabled:opacity-40"
+          >
+            Newer →
+          </button>
+        </div>
+      </div>
+      <p className="mt-1 text-sm text-[var(--dim)]">
+        {longDate(start)} – {longDate(end)} · saved forever, never wiped by rollover
+      </p>
+      {hist.isPending ? (
+        <p className="py-10 text-center text-sm text-[var(--dim)]">Loading history…</p>
+      ) : hist.isError ? (
+        <div className="py-10 text-center">
+          <p className="text-sm text-red-200">Could not load history.</p>
+          <button
+            type="button"
+            onClick={() => hist.refetch()}
+            className="glass-soft mt-3 min-h-10 px-4 text-sm font-bold"
+          >
+            Retry
+          </button>
+        </div>
+      ) : days.length === 0 ? (
+        <p className="py-10 text-center text-sm text-[var(--dim)]">No work saved in this window yet.</p>
+      ) : (
+        <ul className="mt-4 flex flex-col gap-3">
+          {days.map((d) => {
+            const done = d.tasks.filter((t) => t.status === "done").length;
+            const missed = d.tasks.filter((t) => t.status === "missed").length;
+            return (
+              <li key={d.date} className="glass-soft p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onPick(d.date)}
+                    className="font-display text-base font-bold hover:underline"
+                  >
+                    {longDate(d.date)}
+                  </button>
+                  <span className="ml-auto text-xs font-bold text-[var(--dim)]">
+                    {done} done · {missed} missed · {d.tasks.length - done - missed} pending
+                  </span>
+                  <span className="text-xs font-bold text-[var(--dim)]">
+                    Discord {d.chat.sent}/{d.chat.target}
+                  </span>
+                </div>
+                {d.tasks.length === 0 ? (
+                  <p className="mt-2 text-sm text-[var(--dim)]">No tasks — chat only.</p>
+                ) : (
+                  <ul className="mt-2 flex flex-col gap-1.5">
+                    {d.tasks.map((t) => (
+                      <li key={t.id} className="flex flex-wrap items-center gap-2 text-sm">
+                        <span className="text-[var(--dim)]">{fmtTime(t.time)}</span>
+                        <span
+                          className={
+                            t.status === "done"
+                              ? "line-through opacity-70"
+                              : t.status === "missed"
+                                ? "text-red-300"
+                                : ""
+                          }
+                        >
+                          {t.title}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                            t.status === "done"
+                              ? "bg-teal-400/20 text-teal-200"
+                              : t.status === "missed"
+                                ? "bg-red-500/25 text-red-200"
+                                : "bg-white/10 text-[var(--dim)]"
+                          }`}
+                        >
+                          {t.status === "done" ? "Done ✓" : t.status === "missed" ? "Missed ✕" : "Pending"}
+                        </span>
+                        {t.projectName && (
+                          <span className="text-xs font-bold text-[var(--dim)]">#{t.projectName}</span>
+                        )}
+                        {t.postLink && (
+                          <a
+                            href={t.postLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs font-bold text-sky-300 underline"
+                          >
+                            View post ↗
+                          </a>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

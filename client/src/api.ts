@@ -6,9 +6,14 @@
 // it falls back to a localStorage store with the same shape, so the page
 // still works. Once the database is linked, the API answers and the
 // server data is used.
+//
+// Task status is THREE-state per day: done, missed, pending. A completion
+// row with status 'done' | 'missed' means decided; no row means pending.
 
 export type ProjectColor = "blue" | "violet" | "green" | "orange" | "pink" | "teal";
-export type TaskKind = "task" | "post" | "discord";
+export type TaskKind = "task" | "post" | "discord" | "event";
+export type EventRole = "join" | "host";
+export type TaskStatus = "done" | "missed" | "pending";
 
 export type Project = {
   id: number;
@@ -28,6 +33,11 @@ export type DayTask = {
   projectName: string | null;
   projectColor: ProjectColor | null;
   done: boolean;
+  status: TaskStatus;
+  postLink: string | null;
+  details: string | null;
+  eventRole: EventRole | null;
+  remind: boolean;
 };
 
 export type Chat = { target: number; sent: number };
@@ -43,6 +53,14 @@ export type GetMonthResponse = {
   days: { date: string; total: number; done: number }[];
   recurringCount: number;
 };
+
+export type HistoryDay = {
+  date: string;
+  tasks: DayTask[];
+  chat: Chat;
+};
+
+export type GetHistoryResponse = { days: HistoryDay[] };
 
 export type ApiResponse<C, K extends keyof C> = C[K] extends (args: never) => Promise<infer R>
   ? R
@@ -79,12 +97,16 @@ type LocalTask = {
   recurring: boolean;
   projectId: number | null;
   date: string | null;
+  postLink: string | null;
+  details: string | null;
+  eventRole: EventRole | null;
+  remind: boolean;
 };
 
 type Store = {
   projects: Project[];
   tasks: LocalTask[];
-  completions: { taskId: number; date: string; done: boolean }[];
+  completions: { taskId: number; date: string; status: "done" | "missed" }[];
   chatDays: Record<string, Chat>;
   nextProjectId: number;
   nextTaskId: number;
@@ -105,7 +127,16 @@ function loadStore(): Store {
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return emptyStore();
     const parsed = JSON.parse(raw) as Partial<Store>;
-    return { ...emptyStore(), ...parsed };
+    const s = { ...emptyStore(), ...parsed };
+    // Migrate very old rows that lack the new fields.
+    s.tasks = s.tasks.map((t) => ({
+      ...t,
+      postLink: t.postLink ?? null,
+      details: t.details ?? null,
+      eventRole: t.eventRole ?? null,
+      remind: t.remind !== false,
+    }));
+    return s;
   } catch {
     return emptyStore();
   }
@@ -145,34 +176,40 @@ function localLoadChat(s: Store, date: string): Chat {
   return { target: last?.target ?? 50, sent: 0 };
 }
 
+function toDayTask(s: Store, r: LocalTask, date: string): DayTask {
+  const byId = new Map(s.projects.map((p) => [p.id, p]));
+  const proj = r.projectId != null ? byId.get(r.projectId) : undefined;
+  const comp = s.completions.find((c) => c.taskId === r.id && c.date === date);
+  const status: TaskStatus = comp ? comp.status : "pending";
+  return {
+    id: r.id,
+    title: r.title,
+    kind: r.kind,
+    time: r.time,
+    recurring: r.recurring,
+    projectId: r.projectId,
+    projectName: proj?.name ?? null,
+    projectColor: proj?.color ?? null,
+    done: status === "done",
+    status,
+    postLink: r.postLink ?? null,
+    details: r.details ?? null,
+    eventRole: r.eventRole ?? null,
+    remind: r.remind !== false,
+  };
+}
+
 const local = {
   getDay(args: { date: string }): GetDayResponse {
     const s = loadStore();
     seedProjects(s);
-    const byId = new Map(s.projects.map((p) => [p.id, p]));
     const rows = s.tasks
       .filter((t) => t.recurring || t.date === args.date)
       .sort((a, b) => (a.time ?? "").localeCompare(b.time ?? "") || a.id - b.id);
-    const doneSet = new Set(
-      s.completions.filter((c) => c.date === args.date && c.done).map((c) => c.taskId),
-    );
     return {
       date: args.date,
       projects: [...s.projects].sort((a, b) => a.id - b.id),
-      tasks: rows.map((r) => {
-        const proj = r.projectId != null ? byId.get(r.projectId) : undefined;
-        return {
-          id: r.id,
-          title: r.title,
-          kind: r.kind,
-          time: r.time,
-          recurring: r.recurring,
-          projectId: r.projectId,
-          projectName: proj?.name ?? null,
-          projectColor: proj?.color ?? null,
-          done: doneSet.has(r.id),
-        };
-      }),
+      tasks: rows.map((r) => toDayTask(s, r, args.date)),
       chat: localLoadChat(s, args.date),
     };
   },
@@ -192,7 +229,7 @@ const local = {
       entryFor(t.date).total += 1;
     }
     for (const c of s.completions) {
-      if (!c.done || !c.date.startsWith(args.month)) continue;
+      if (c.status !== "done" || !c.date.startsWith(args.month)) continue;
       const t = taskById.get(c.taskId);
       if (!t) continue;
       if (t.recurring || t.date === c.date) entryFor(c.date).done += 1;
@@ -201,6 +238,26 @@ const local = {
       days: [...totals.entries()].map(([date, v]) => ({ date, total: v.total, done: v.done })),
       recurringCount,
     };
+  },
+
+  getHistory(args: { from: string; to: string }): GetHistoryResponse {
+    const s = loadStore();
+    seedProjects(s);
+    const days: HistoryDay[] = [];
+    const fromD = new Date(args.from + "T00:00:00Z");
+    const toD = new Date(args.to + "T00:00:00Z");
+    for (let d = new Date(fromD); d <= toD; d.setUTCDate(d.getUTCDate() + 1)) {
+      const key = d.toISOString().slice(0, 10);
+      const dayTasks = s.tasks
+        .filter((t) => t.recurring || t.date === key)
+        .sort((a, b) => (a.time ?? "").localeCompare(b.time ?? "") || a.id - b.id)
+        .map((r) => toDayTask(s, r, key));
+      const hasChat = key in s.chatDays;
+      if (dayTasks.length > 0 || hasChat) {
+        days.push({ date: key, tasks: dayTasks, chat: localLoadChat(s, key) });
+      }
+    }
+    return { days };
   },
 
   addProject(args: { name: string; color?: ProjectColor; link?: string; note?: string }): { id: number } {
@@ -252,19 +309,28 @@ const local = {
     projectId?: number | null;
     date?: string | null;
     recurring?: boolean;
+    postLink?: string | null;
+    details?: string | null;
+    eventRole?: EventRole | null;
+    remind?: boolean;
   }): { id: number } {
     const s = loadStore();
     const title = args.title.trim();
     if (!title) throw new Error("Title is required.");
     const id = s.nextTaskId++;
+    const kind = args.kind ?? "task";
     s.tasks.push({
       id,
       title: title.slice(0, 120),
-      kind: args.kind ?? "task",
+      kind,
       time: args.time ?? null,
       recurring: args.recurring === true,
       projectId: args.projectId ?? null,
       date: args.recurring === true ? null : (args.date ?? null),
+      postLink: args.postLink?.trim() ? args.postLink.trim().slice(0, 500) : null,
+      details: args.details?.trim() ? args.details.trim().slice(0, 500) : null,
+      eventRole: kind === "event" && (args.eventRole === "join" || args.eventRole === "host") ? args.eventRole : null,
+      remind: args.remind === false ? false : true,
     });
     saveStore(s);
     return { id };
@@ -278,6 +344,10 @@ const local = {
     projectId: number | null;
     date: string | null;
     recurring: boolean;
+    postLink?: string | null;
+    details?: string | null;
+    eventRole?: EventRole | null;
+    remind?: boolean;
   }): { ok: true } {
     const s = loadStore();
     const t = s.tasks.find((x) => x.id === args.id);
@@ -288,6 +358,11 @@ const local = {
     t.projectId = args.projectId ?? null;
     t.recurring = args.recurring;
     t.date = args.recurring ? null : (args.date ?? null);
+    t.postLink = args.postLink?.trim() ? args.postLink.trim().slice(0, 500) : null;
+    t.details = args.details?.trim() ? args.details.trim().slice(0, 500) : null;
+    t.eventRole =
+      args.kind === "event" && (args.eventRole === "join" || args.eventRole === "host") ? args.eventRole : null;
+    t.remind = args.remind === false ? false : true;
     saveStore(s);
     return { ok: true };
   },
@@ -300,11 +375,16 @@ const local = {
     return { ok: true };
   },
 
-  setTaskDone(args: { taskId: number; date: string; done: boolean }): { ok: true } {
+  setTaskStatus(args: { taskId: number; date: string; status: "done" | "missed" | null }): { ok: true } {
     const s = loadStore();
-    const existing = s.completions.find((c) => c.taskId === args.taskId && c.date === args.date);
-    if (existing) existing.done = args.done;
-    else s.completions.push({ taskId: args.taskId, date: args.date, done: args.done });
+    const idx = s.completions.findIndex((c) => c.taskId === args.taskId && c.date === args.date);
+    if (args.status === null) {
+      if (idx >= 0) s.completions.splice(idx, 1);
+    } else if (idx >= 0) {
+      s.completions[idx]!.status = args.status;
+    } else {
+      s.completions.push({ taskId: args.taskId, date: args.date, status: args.status });
+    }
     saveStore(s);
     return { ok: true };
   },
@@ -361,6 +441,10 @@ export const api = {
     withFallback(() => callApi<GetMonthResponse>("/api/tasks", { action: "getMonth", ...args }), () =>
       local.getMonth(args),
     ),
+  getHistory: (args: { from: string; to: string }) =>
+    withFallback(() => callApi<GetHistoryResponse>("/api/tasks", { action: "getHistory", ...args }), () =>
+      local.getHistory(args),
+    ),
   addProject: (args: { name: string; color?: ProjectColor; link?: string; note?: string }) =>
     withFallback(() => callApi<{ id: number }>("/api/projects", { action: "add", ...args }), () =>
       local.addProject(args),
@@ -380,6 +464,10 @@ export const api = {
     projectId?: number | null;
     date?: string | null;
     recurring?: boolean;
+    postLink?: string | null;
+    details?: string | null;
+    eventRole?: EventRole | null;
+    remind?: boolean;
   }) =>
     withFallback(() => callApi<{ id: number }>("/api/tasks", { action: "add", ...args }), () =>
       local.addTask(args),
@@ -392,6 +480,10 @@ export const api = {
     projectId: number | null;
     date: string | null;
     recurring: boolean;
+    postLink?: string | null;
+    details?: string | null;
+    eventRole?: EventRole | null;
+    remind?: boolean;
   }) =>
     withFallback(() => callApi<{ ok: true }>("/api/tasks", { action: "update", ...args }), () =>
       local.updateTask(args),
@@ -401,8 +493,13 @@ export const api = {
       local.deleteTask(args),
     ),
   setTaskDone: (args: { taskId: number; date: string; done: boolean }) =>
-    withFallback(() => callApi<{ ok: true }>("/api/tasks", { action: "setDone", ...args }), () =>
-      local.setTaskDone(args),
+    withFallback(
+      () => callApi<{ ok: true }>("/api/tasks", { action: "setDone", ...args }),
+      () => local.setTaskStatus({ taskId: args.taskId, date: args.date, status: args.done ? "done" : null }),
+    ),
+  setTaskStatus: (args: { taskId: number; date: string; status: "done" | "missed" | null }) =>
+    withFallback(() => callApi<{ ok: true }>("/api/tasks", { action: "setStatus", ...args }), () =>
+      local.setTaskStatus(args),
     ),
   setChatTarget: (args: { date: string; target: number }) =>
     withFallback(() => callApi<{ ok: true }>("/api/chat", { action: "setTarget", ...args }), () =>
