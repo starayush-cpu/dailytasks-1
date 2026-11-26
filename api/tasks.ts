@@ -1,5 +1,6 @@
 // Tasks API: getDay / getMonth / getHistory / add / update / delete /
-// setDone / setStatus / setPosted. POST /api/tasks { action, userId, ...args }
+// setDone / setStatus / setPosted / setVerified / setEngagement.
+// POST /api/tasks { action, userId, ...args }
 //
 // Task status is THREE-state per day: done, missed, pending.
 // `completions` stores an explicit status ('done' | 'missed') and a
@@ -58,7 +59,45 @@ type ProjectRow = {
   ended: number;
 };
 
-type CompletionRow = { task_id: number; date: string; done: number; status: string | null; posted: number };
+type CompletionRow = {
+  task_id: number;
+  date: string;
+  done: number;
+  status: string | null;
+  posted: number;
+  verified: number;
+  verified_source: string | null;
+  views: number | null;
+  likes: number | null;
+  reposts: number | null;
+  replies: number | null;
+};
+
+/** Engagement is per post per day; a row carrying any of these (or a
+ * verification) must not be deleted by the done/posted clear paths. */
+function completionCarriesCheck(c: CompletionRow | undefined): boolean {
+  if (!c) return false;
+  return (
+    c.verified === 1 ||
+    c.views != null ||
+    c.likes != null ||
+    c.reposts != null ||
+    c.replies != null
+  );
+}
+
+/** An engagement number: null clears it, "invalid" rejects the request. */
+function cleanEngagement(v: unknown): number | null | "invalid" {
+  if (v === null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 100000000) return "invalid";
+  return n;
+}
+
+function cleanSource(v: unknown): string {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s ? s.slice(0, 40) : "manual";
+}
 
 function cleanKind(k: unknown): TaskKind {
   return KINDS.includes(k as TaskKind) ? (k as TaskKind) : "task";
@@ -81,12 +120,15 @@ function postedOf(c: CompletionRow | undefined, mirror: number): boolean {
   return mirror === 1;
 }
 
+const COMPLETION_COLS =
+  "task_id, date, done, status, posted, verified, verified_source, views, likes, reposts, replies";
+
 function toDayTask(
   r: TaskRow,
   proj: { name: string; color: ProjectColor; ended: boolean } | undefined,
-  status: TaskStatus,
-  posted: boolean,
+  c: CompletionRow | undefined,
 ) {
+  const status = statusOf(c);
   return {
     id: r.id,
     title: r.title,
@@ -99,7 +141,13 @@ function toDayTask(
     projectEnded: proj?.ended ?? false,
     done: status === "done",
     status,
-    posted,
+    posted: postedOf(c, r.posted),
+    verified: c?.verified === 1,
+    verifiedSource: c?.verified_source ?? null,
+    views: c?.views ?? null,
+    likes: c?.likes ?? null,
+    reposts: c?.reposts ?? null,
+    replies: c?.replies ?? null,
     kaito: r.kaito === 1,
     postLink: r.post_link ?? null,
     details: r.details ?? null,
@@ -148,7 +196,7 @@ export default async function handler(req: any, res: any) {
         const compByTask = new Map<number, CompletionRow>();
         if (rows.length > 0) {
           const compRes = await db.execute(
-            sql`SELECT task_id, date, done, status, posted FROM completions WHERE date = ${date}`,
+            sql`SELECT ${sql.raw(COMPLETION_COLS)} FROM completions WHERE date = ${date}`,
           );
           for (const c of compRes.rows as CompletionRow[]) compByTask.set(c.task_id, c);
         }
@@ -165,8 +213,7 @@ export default async function handler(req: any, res: any) {
             })
             .map((r) => {
               const proj = r.project_id != null ? byId.get(r.project_id) : undefined;
-              const c = compByTask.get(r.id);
-              return toDayTask(r, proj, statusOf(c), postedOf(c, r.posted));
+              return toDayTask(r, proj, compByTask.get(r.id));
             }),
           chat,
           projectChat,
@@ -190,7 +237,7 @@ export default async function handler(req: any, res: any) {
           sql`SELECT id, repeat, date, project_id FROM tasks WHERE user_id = ${userId} AND (date LIKE ${month + "%"} OR repeat = 1)`,
         );
         const compRes = await db.execute(
-          sql`SELECT task_id, date, done, status, posted FROM completions WHERE date LIKE ${month + "%"}`,
+          sql`SELECT ${sql.raw(COMPLETION_COLS)} FROM completions WHERE date LIKE ${month + "%"}`,
         );
         const taskById = new Map(
           (taskRes.rows as { id: number; repeat: number; date: string | null; project_id: number | null }[]).map(
@@ -241,7 +288,7 @@ export default async function handler(req: any, res: any) {
         );
         const rows = taskRes.rows as TaskRow[];
         const compRes = await db.execute(
-          sql`SELECT task_id, date, done, status, posted FROM completions WHERE date >= ${from} AND date <= ${to}`,
+          sql`SELECT ${sql.raw(COMPLETION_COLS)} FROM completions WHERE date >= ${from} AND date <= ${to}`,
         );
         const compByKey = new Map<string, CompletionRow>();
         for (const c of compRes.rows as CompletionRow[]) compByKey.set(`${c.task_id}|${c.date}`, c);
@@ -275,8 +322,7 @@ export default async function handler(req: any, res: any) {
             .filter((r) => r.repeat === 1 || r.date === key)
             .map((r) => {
               const proj = r.project_id != null ? byId.get(r.project_id) : undefined;
-              const c = compByKey.get(`${r.id}|${key}`);
-              return toDayTask(r, proj, statusOf(c), postedOf(c, r.posted));
+              return toDayTask(r, proj, compByKey.get(`${r.id}|${key}`));
             });
           const chat = chatByDate.get(key) ?? (await loadChat(db, userId, key));
           if (dayTasks.length > 0 || chatByDate.has(key)) {
@@ -379,10 +425,15 @@ export default async function handler(req: any, res: any) {
         );
         if (own.rows.length === 0) return false;
         const cur = await db.execute(
-          sql`SELECT posted FROM completions WHERE task_id = ${taskId} AND date = ${date} LIMIT 1`,
+          sql`SELECT posted, verified, views, likes, reposts, replies FROM completions WHERE task_id = ${taskId} AND date = ${date} LIMIT 1`,
         );
-        const curPosted = (cur.rows[0] as { posted: number } | undefined)?.posted ?? 0;
-        if (status === null && curPosted === 0) {
+        const curRow = cur.rows[0] as
+          | { posted: number; verified: number; views: number | null; likes: number | null; reposts: number | null; replies: number | null }
+          | undefined;
+        const curPosted = curRow?.posted ?? 0;
+        // A row carrying a verification or engagement keeps its data: clear
+        // the status, do not delete the row.
+        if (status === null && curPosted === 0 && !completionCarriesCheck(curRow as CompletionRow | undefined)) {
           await db.execute(sql`DELETE FROM completions WHERE task_id = ${taskId} AND date = ${date}`);
         } else {
           await db.execute(sql`
@@ -414,12 +465,20 @@ export default async function handler(req: any, res: any) {
         );
         if (own.rows.length === 0) return false;
         const cur = await db.execute(
-          sql`SELECT done, status FROM completions WHERE task_id = ${taskId} AND date = ${date} LIMIT 1`,
+          sql`SELECT done, status, verified, views, likes, reposts, replies FROM completions WHERE task_id = ${taskId} AND date = ${date} LIMIT 1`,
         );
-        const curRow = cur.rows[0] as { done: number; status: string | null } | undefined;
+        const curRow = cur.rows[0] as
+          | { done: number; status: string | null; verified: number; views: number | null; likes: number | null; reposts: number | null; replies: number | null }
+          | undefined;
         if (!posted && !curRow) {
           // Nothing recorded for this day: nothing to clear.
-        } else if (!posted && curRow && curRow.status === null && curRow.done === 0) {
+        } else if (
+          !posted &&
+          curRow &&
+          curRow.status === null &&
+          curRow.done === 0 &&
+          !completionCarriesCheck(curRow as CompletionRow | undefined)
+        ) {
           await db.execute(sql`DELETE FROM completions WHERE task_id = ${taskId} AND date = ${date}`);
         } else {
           await db.execute(sql`
@@ -434,6 +493,110 @@ export default async function handler(req: any, res: any) {
         return true;
       });
       if (!owned) return res.status(400).json({ error: "Unknown task." });
+      return res.status(200).json({ ok: true });
+    }
+
+    // setVerified: Rio's daily post check. The site cannot check X itself
+    // (free API gives no post reads, no X login on the site), so Rio checks
+    // the signed-in X tab and writes the result here. `source` records who
+    // checked: "rio-check" for Rio, "manual" for a hand check. Only post
+    // tasks can be verified.
+    if (action === "setVerified") {
+      const taskId = Number(args.taskId);
+      const date = args.date;
+      const verified = args.verified === true;
+      const source = cleanSource(args.source);
+      if (!Number.isInteger(taskId) || taskId <= 0 || !isValidDate(date)) {
+        return res.status(400).json({ error: "Invalid task or date." });
+      }
+      const owned = await withDb(async (db) => {
+        const own = await db.execute(
+          sql`SELECT id, type FROM tasks WHERE id = ${taskId} AND user_id = ${userId} LIMIT 1`,
+        );
+        const t = own.rows[0] as { id: number; type: string } | undefined;
+        if (!t) return "unknown";
+        if (t.type !== "post") return "not-post";
+        const cur = await db.execute(
+          sql`SELECT ${sql.raw(COMPLETION_COLS)} FROM completions WHERE task_id = ${taskId} AND date = ${date} LIMIT 1`,
+        );
+        const curRow = cur.rows[0] as CompletionRow | undefined;
+        const hasOther =
+          (curRow?.status ?? null) !== null ||
+          (curRow?.done ?? 0) === 1 ||
+          (curRow?.posted ?? 0) === 1 ||
+          curRow?.views != null ||
+          curRow?.likes != null ||
+          curRow?.reposts != null ||
+          curRow?.replies != null;
+        if (!verified && !hasOther) {
+          await db.execute(sql`DELETE FROM completions WHERE task_id = ${taskId} AND date = ${date}`);
+        } else {
+          await db.execute(sql`
+            INSERT INTO completions (task_id, date, done, status, posted, verified, verified_source) VALUES (${taskId}, ${date}, ${curRow?.done ?? 0}, ${curRow?.status ?? null}, ${curRow?.posted ?? 0}, ${verified ? 1 : 0}, ${verified ? source : null})
+            ON CONFLICT (task_id, date) DO UPDATE SET verified = EXCLUDED.verified, verified_source = EXCLUDED.verified_source`);
+        }
+        return "ok";
+      });
+      if (owned === "unknown") return res.status(400).json({ error: "Unknown task." });
+      if (owned === "not-post") return res.status(400).json({ error: "Only post tasks can be verified." });
+      return res.status(200).json({ ok: true });
+    }
+
+    // setEngagement: per-post, per-day numbers. Fields omitted from the
+    // request are left alone; null clears that number. Only post tasks.
+    if (action === "setEngagement") {
+      const taskId = Number(args.taskId);
+      const date = args.date;
+      const views = "views" in args ? cleanEngagement(args.views) : undefined;
+      const likes = "likes" in args ? cleanEngagement(args.likes) : undefined;
+      const reposts = "reposts" in args ? cleanEngagement(args.reposts) : undefined;
+      const replies = "replies" in args ? cleanEngagement(args.replies) : undefined;
+      if (
+        !Number.isInteger(taskId) ||
+        taskId <= 0 ||
+        !isValidDate(date) ||
+        views === "invalid" ||
+        likes === "invalid" ||
+        reposts === "invalid" ||
+        replies === "invalid"
+      ) {
+        return res.status(400).json({ error: "Invalid task, date, or engagement numbers." });
+      }
+      const owned = await withDb(async (db) => {
+        const own = await db.execute(
+          sql`SELECT id, type FROM tasks WHERE id = ${taskId} AND user_id = ${userId} LIMIT 1`,
+        );
+        const t = own.rows[0] as { id: number; type: string } | undefined;
+        if (!t) return "unknown";
+        if (t.type !== "post") return "not-post";
+        const cur = await db.execute(
+          sql`SELECT ${sql.raw(COMPLETION_COLS)} FROM completions WHERE task_id = ${taskId} AND date = ${date} LIMIT 1`,
+        );
+        const curRow = cur.rows[0] as CompletionRow | undefined;
+        const next = {
+          views: views === undefined ? (curRow?.views ?? null) : views,
+          likes: likes === undefined ? (curRow?.likes ?? null) : likes,
+          reposts: reposts === undefined ? (curRow?.reposts ?? null) : reposts,
+          replies: replies === undefined ? (curRow?.replies ?? null) : replies,
+        };
+        const hasOther =
+          (curRow?.status ?? null) !== null ||
+          (curRow?.done ?? 0) === 1 ||
+          (curRow?.posted ?? 0) === 1 ||
+          (curRow?.verified ?? 0) === 1;
+        const hasEngagement =
+          next.views != null || next.likes != null || next.reposts != null || next.replies != null;
+        if (!hasOther && !hasEngagement) {
+          await db.execute(sql`DELETE FROM completions WHERE task_id = ${taskId} AND date = ${date}`);
+        } else {
+          await db.execute(sql`
+            INSERT INTO completions (task_id, date, done, status, posted, verified, verified_source, views, likes, reposts, replies) VALUES (${taskId}, ${date}, ${curRow?.done ?? 0}, ${curRow?.status ?? null}, ${curRow?.posted ?? 0}, ${curRow?.verified ?? 0}, ${curRow?.verified_source ?? null}, ${next.views}, ${next.likes}, ${next.reposts}, ${next.replies})
+            ON CONFLICT (task_id, date) DO UPDATE SET views = EXCLUDED.views, likes = EXCLUDED.likes, reposts = EXCLUDED.reposts, replies = EXCLUDED.replies`);
+        }
+        return "ok";
+      });
+      if (owned === "unknown") return res.status(400).json({ error: "Unknown task." });
+      if (owned === "not-post") return res.status(400).json({ error: "Only post tasks take engagement." });
       return res.status(200).json({ ok: true });
     }
 

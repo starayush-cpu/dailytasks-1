@@ -9,9 +9,13 @@
 //   projects    id, user_id, name, color, link, note, logo, ended
 //   tasks       id, user_id, project_id, title, time, type, repeat, done,
 //               date, post_link, details, event_role, remind, kaito, posted
-//   completions task_id, date, done, status, posted (per-date done/missed/
-//               posted state, so a recurring task appears unchecked on a
-//               new day; no row means pending / not posted)
+//   completions task_id, date, done, status, posted, verified,
+//               verified_source, views, likes, reposts, replies (per-date
+//               done/missed/posted state, so a recurring task appears
+//               unchecked on a new day; no row means pending / not posted.
+//               `verified` is Rio's daily post check: 1 when the post was
+//               actually seen live, with the source that checked it.
+//               Engagement numbers are per post per day, nullable.)
 //   chat_days   user_id, date, sent, target
 //   project_chat_days user_id, project_id, date, sent, target
 //
@@ -135,6 +139,13 @@ async function ensureSchema(): Promise<void> {
       await d.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS posted INTEGER NOT NULL DEFAULT 0`);
       await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS status TEXT`);
       await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS posted INTEGER NOT NULL DEFAULT 0`);
+      // Post verification (Rio's daily X check) + per-post engagement.
+      await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS verified INTEGER NOT NULL DEFAULT 0`);
+      await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS verified_source TEXT`);
+      await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS views INTEGER`);
+      await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS likes INTEGER`);
+      await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS reposts INTEGER`);
+      await d.execute(sql`ALTER TABLE completions ADD COLUMN IF NOT EXISTS replies INTEGER`);
       // Pre-multi-user chat_days had PRIMARY KEY (date). Migrate it to
       // (user_id, date); best effort — never block startup on this.
       try {

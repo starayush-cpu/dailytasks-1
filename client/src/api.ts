@@ -51,6 +51,12 @@ export type DayTask = {
   done: boolean;
   status: TaskStatus;
   posted: boolean;
+  verified: boolean;
+  verifiedSource: string | null;
+  views: number | null;
+  likes: number | null;
+  reposts: number | null;
+  replies: number | null;
   kaito: boolean;
   postLink: string | null;
   details: string | null;
@@ -155,12 +161,37 @@ type LocalProject = Project;
 type Store = {
   projects: LocalProject[];
   tasks: LocalTask[];
-  completions: { taskId: number; date: string; status: "done" | "missed" | null; posted: boolean }[];
+  completions: {
+    taskId: number;
+    date: string;
+    status: "done" | "missed" | null;
+    posted: boolean;
+    verified: boolean;
+    verifiedSource: string | null;
+    views: number | null;
+    likes: number | null;
+    reposts: number | null;
+    replies: number | null;
+  }[];
   chatDays: Record<string, Chat>;
   projectChat: Record<string, { sent: number; target: number }>;
   nextProjectId: number;
   nextTaskId: number;
 };
+
+/** A completion row carries something worth keeping when it has a status,
+ * a posted flag, a verification, or any engagement number. */
+function completionKeeps(c: Store["completions"][number]): boolean {
+  return (
+    c.status !== null ||
+    c.posted ||
+    c.verified ||
+    c.views != null ||
+    c.likes != null ||
+    c.reposts != null ||
+    c.replies != null
+  );
+}
 
 type UsersRecord = { users: User[]; nextUserId: number };
 
@@ -259,6 +290,12 @@ function normalizeStore(s: Store): Store {
     date: c.date,
     status: c.status,
     posted: (c as Partial<{ posted: boolean }>).posted === true,
+    verified: (c as Partial<{ verified: boolean }>).verified === true,
+    verifiedSource: (c as Partial<{ verifiedSource: string | null }>).verifiedSource ?? null,
+    views: (c as Partial<{ views: number | null }>).views ?? null,
+    likes: (c as Partial<{ likes: number | null }>).likes ?? null,
+    reposts: (c as Partial<{ reposts: number | null }>).reposts ?? null,
+    replies: (c as Partial<{ replies: number | null }>).replies ?? null,
   }));
   s.chatDays = s.chatDays ?? {};
   s.projectChat = (s as Partial<Store>).projectChat ?? {};
@@ -343,6 +380,12 @@ function toDayTask(s: Store, r: LocalTask, date: string): DayTask {
     done: status === "done",
     status,
     posted: comp ? comp.posted : r.posted,
+    verified: comp?.verified === true,
+    verifiedSource: comp?.verifiedSource ?? null,
+    views: comp?.views ?? null,
+    likes: comp?.likes ?? null,
+    reposts: comp?.reposts ?? null,
+    replies: comp?.replies ?? null,
     kaito: r.kaito,
     postLink: r.postLink ?? null,
     details: r.details ?? null,
@@ -611,15 +654,26 @@ const local = {
     const s = loadStore(userId);
     const idx = s.completions.findIndex((c) => c.taskId === args.taskId && c.date === args.date);
     if (args.status === null) {
-      if (idx >= 0 && !s.completions[idx]!.posted) s.completions.splice(idx, 1);
+      if (idx >= 0 && !completionKeeps({ ...s.completions[idx]!, status: null })) s.completions.splice(idx, 1);
       else if (idx >= 0) s.completions[idx]!.status = null;
     } else if (idx >= 0) {
       s.completions[idx]!.status = args.status;
     } else {
-      s.completions.push({ taskId: args.taskId, date: args.date, status: args.status, posted: false });
+      s.completions.push({
+        taskId: args.taskId,
+        date: args.date,
+        status: args.status,
+        posted: false,
+        verified: false,
+        verifiedSource: null,
+        views: null,
+        likes: null,
+        reposts: null,
+        replies: null,
+      });
     }
-    // A completion with no status and not posted carries nothing: drop it.
-    s.completions = s.completions.filter((c) => c.status !== null || c.posted);
+    // A completion carrying nothing worth keeping is dropped.
+    s.completions = s.completions.filter(completionKeeps);
     saveStore(userId, s);
     return { ok: true };
   },
@@ -635,9 +689,93 @@ const local = {
     if (idx >= 0) {
       s.completions[idx]!.posted = args.posted;
     } else if (args.posted) {
-      s.completions.push({ taskId: args.taskId, date: args.date, status: null, posted: true });
+      s.completions.push({
+        taskId: args.taskId,
+        date: args.date,
+        status: null,
+        posted: true,
+        verified: false,
+        verifiedSource: null,
+        views: null,
+        likes: null,
+        reposts: null,
+        replies: null,
+      });
     }
-    s.completions = s.completions.filter((c) => c.status !== null || c.posted);
+    s.completions = s.completions.filter(completionKeeps);
+    saveStore(userId, s);
+    return { ok: true };
+  },
+
+  setTaskVerified(
+    userId: number,
+    args: { taskId: number; date: string; verified: boolean; source?: string },
+  ): { ok: true } {
+    const s = loadStore(userId);
+    const idx = s.completions.findIndex((c) => c.taskId === args.taskId && c.date === args.date);
+    if (idx >= 0) {
+      s.completions[idx]!.verified = args.verified;
+      s.completions[idx]!.verifiedSource = args.verified
+        ? args.source?.trim().slice(0, 40) || "manual"
+        : null;
+    } else if (args.verified) {
+      s.completions.push({
+        taskId: args.taskId,
+        date: args.date,
+        status: null,
+        posted: false,
+        verified: true,
+        verifiedSource: args.source?.trim().slice(0, 40) || "manual",
+        views: null,
+        likes: null,
+        reposts: null,
+        replies: null,
+      });
+    }
+    s.completions = s.completions.filter(completionKeeps);
+    saveStore(userId, s);
+    return { ok: true };
+  },
+
+  setEngagement(
+    userId: number,
+    args: {
+      taskId: number;
+      date: string;
+      views?: number | null;
+      likes?: number | null;
+      reposts?: number | null;
+      replies?: number | null;
+    },
+  ): { ok: true } {
+    const s = loadStore(userId);
+    const clean = (v: number | null | undefined, cur: number | null): number | null => {
+      if (v === undefined) return cur;
+      if (v === null) return null;
+      return Number.isInteger(v) && v >= 0 ? v : cur;
+    };
+    const idx = s.completions.findIndex((c) => c.taskId === args.taskId && c.date === args.date);
+    if (idx >= 0) {
+      const c = s.completions[idx]!;
+      c.views = clean(args.views, c.views);
+      c.likes = clean(args.likes, c.likes);
+      c.reposts = clean(args.reposts, c.reposts);
+      c.replies = clean(args.replies, c.replies);
+    } else {
+      s.completions.push({
+        taskId: args.taskId,
+        date: args.date,
+        status: null,
+        posted: false,
+        verified: false,
+        verifiedSource: null,
+        views: args.views ?? null,
+        likes: args.likes ?? null,
+        reposts: args.reposts ?? null,
+        replies: args.replies ?? null,
+      });
+    }
+    s.completions = s.completions.filter(completionKeeps);
     saveStore(userId, s);
     return { ok: true };
   },
@@ -853,6 +991,23 @@ export const api = {
     withFallback(
       () => callApi<{ ok: true }>("/api/tasks", { action: "setPosted", userId: uid(), ...args }),
       () => local.setTaskPosted(uid(), args),
+    ),
+  setTaskVerified: (args: { taskId: number; date: string; verified: boolean; source?: string }) =>
+    withFallback(
+      () => callApi<{ ok: true }>("/api/tasks", { action: "setVerified", userId: uid(), ...args }),
+      () => local.setTaskVerified(uid(), args),
+    ),
+  setEngagement: (args: {
+    taskId: number;
+    date: string;
+    views?: number | null;
+    likes?: number | null;
+    reposts?: number | null;
+    replies?: number | null;
+  }) =>
+    withFallback(
+      () => callApi<{ ok: true }>("/api/tasks", { action: "setEngagement", userId: uid(), ...args }),
+      () => local.setEngagement(uid(), args),
     ),
   setChatTarget: (args: { date: string; target: number }) =>
     withFallback(

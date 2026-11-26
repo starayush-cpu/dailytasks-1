@@ -145,6 +145,63 @@ function statusClass(s: TaskStatus): string {
 }
 
 // ---------------------------------------------------------------------------
+// Post verification — did the post actually go out?
+// The site cannot check X itself (free API gives no post reads, no X login
+// on the site), so Rio checks the signed-in X tab daily and writes the
+// result here. The badge is quiet by design: nothing extra before the
+// task's time, "Posted ✓" once verified, "Not posted yet" once the time
+// has passed without a verification, "Link saved" when a link is saved
+// but nothing is verified yet.
+// ---------------------------------------------------------------------------
+
+function timePassed(dateStr: string, time: string | null, now: Date): boolean {
+  const today = todayStr();
+  if (dateStr < today) return true;
+  if (dateStr > today) return false;
+  if (!time) return false;
+  const parts = time.split(":");
+  const h = Number(parts[0] ?? 0);
+  const m = Number(parts[1] ?? 0);
+  return now.getHours() * 60 + now.getMinutes() >= h * 60 + m;
+}
+
+function verifyBadge(t: DayTask, dateStr: string, now: Date): React.ReactNode {
+  if (t.kind !== "post") return null;
+  if (t.verified) {
+    return (
+      <span
+        className="verified-badge"
+        title={t.verifiedSource ? `Post checked live via ${t.verifiedSource}` : "Post checked live"}
+      >
+        Posted ✓
+      </span>
+    );
+  }
+  if (t.posted) return <span className="posted-badge">Posted</span>;
+  if (timePassed(dateStr, t.time, now)) return <span className="not-posted-badge">Not posted yet</span>;
+  if (t.postLink) return <span className="link-saved-badge">Link saved</span>;
+  return null;
+}
+
+function hasEngagement(t: DayTask): boolean {
+  return t.views != null || t.likes != null || t.reposts != null || t.replies != null;
+}
+
+function engagementTotal(t: DayTask): number {
+  return (t.views ?? 0) + (t.likes ?? 0) + (t.reposts ?? 0) + (t.replies ?? 0);
+}
+
+function fmtNum(n: number | null): string {
+  if (n == null) return "—";
+  return n.toLocaleString("en-IN");
+}
+
+function hourLabel(hour: number): string {
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${h12} ${hour < 12 ? "AM" : "PM"}`;
+}
+
+// ---------------------------------------------------------------------------
 // Phone reminders (.ics + Google Calendar) — always name the project.
 // ---------------------------------------------------------------------------
 
@@ -436,7 +493,7 @@ function TaskRow({
                 {platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 16)} Kaito
               </span>
             )}
-            {t.kind === "post" && t.posted && <span className="posted-badge">Posted</span>}
+            {verifyBadge(t, dateStr, now)}
             {t.kind === "event" && t.eventRole && (
               <span className={`event-role-badge ${t.eventRole}`}>
                 {t.eventRole === "play" ? "▶ Play" : "🎤 Host"}
@@ -480,6 +537,12 @@ function TaskRow({
       {expanded && (
         <div className="task-detail">
           {t.details && <p className="task-details">{t.details}</p>}
+          {t.kind === "post" && hasEngagement(t) && (
+            <p className="task-engagement">
+              👁 {fmtNum(t.views)} views · ♥ {fmtNum(t.likes)} · ↻ {fmtNum(t.reposts)} reposts · 💬{" "}
+              {fmtNum(t.replies)} replies
+            </p>
+          )}
           {t.kind === "post" && (
             <div className="task-link-row">
               <input
@@ -611,6 +674,13 @@ type TaskFormProps = {
     eventRole: EventRole | null;
     remind: boolean;
     kaito: boolean;
+    // Engagement belongs to this task on `date` (the day being edited).
+    engagement?: {
+      views: number | null;
+      likes: number | null;
+      reposts: number | null;
+      replies: number | null;
+    };
   };
   onSave: (v: TaskFormProps["initial"]) => Promise<void> | void;
   onCancel: () => void;
@@ -629,7 +699,22 @@ function TaskForm({ projects, initial, onSave, onCancel, saving }: TaskFormProps
   const [eventRole, setEventRole] = useState<EventRole | null>(initial.eventRole);
   const [remind, setRemind] = useState(initial.remind);
   const [kaito, setKaito] = useState(initial.kaito);
+  const [views, setViews] = useState(initial.engagement?.views != null ? String(initial.engagement.views) : "");
+  const [likes, setLikes] = useState(initial.engagement?.likes != null ? String(initial.engagement.likes) : "");
+  const [reposts, setReposts] = useState(
+    initial.engagement?.reposts != null ? String(initial.engagement.reposts) : "",
+  );
+  const [replies, setReplies] = useState(
+    initial.engagement?.replies != null ? String(initial.engagement.replies) : "",
+  );
   const [error, setError] = useState("");
+
+  function parseEng(v: string): number | null {
+    const s = v.trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  }
 
   const activeProjects = projects.filter((p) => !p.ended);
 
@@ -656,6 +741,10 @@ function TaskForm({ projects, initial, onSave, onCancel, saving }: TaskFormProps
       eventRole: kind === "event" ? eventRole : null,
       remind,
       kaito: kind === "post" ? kaito : false,
+      engagement:
+        kind === "post" && initial.id
+          ? { views: parseEng(views), likes: parseEng(likes), reposts: parseEng(reposts), replies: parseEng(replies) }
+          : undefined,
     });
   }
 
@@ -746,6 +835,30 @@ function TaskForm({ projects, initial, onSave, onCancel, saving }: TaskFormProps
             {platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 20)}
             <span>Post this on Kaito too</span>
           </label>
+          {initial.id && (
+            <div className="field">
+              <span>Engagement for {dateLabel(date)} (optional)</span>
+              <div className="engagement-grid">
+                <label>
+                  <span>Views</span>
+                  <input type="text" inputMode="numeric" value={views} onChange={(e) => setViews(e.target.value)} placeholder="0" aria-label="Views" />
+                </label>
+                <label>
+                  <span>Likes</span>
+                  <input type="text" inputMode="numeric" value={likes} onChange={(e) => setLikes(e.target.value)} placeholder="0" aria-label="Likes" />
+                </label>
+                <label>
+                  <span>Reposts</span>
+                  <input type="text" inputMode="numeric" value={reposts} onChange={(e) => setReposts(e.target.value)} placeholder="0" aria-label="Reposts" />
+                </label>
+                <label>
+                  <span>Replies</span>
+                  <input type="text" inputMode="numeric" value={replies} onChange={(e) => setReplies(e.target.value)} placeholder="0" aria-label="Replies" />
+                </label>
+              </div>
+              <small className="field-hint">Numbers for this day&apos;s post — they feed the best-time-to-post panel.</small>
+            </div>
+          )}
         </>
       )}
       <label className="field">
@@ -997,7 +1110,7 @@ function DayDetail({
                     <span className="day-detail-title">{t.title}</span>
                     <span className="day-detail-time">{fmtTime12(t.time)}</span>
                     <span className={`day-detail-badge ${statusClass(t.status)}`}>{statusLabel(t.status)}</span>
-                    {t.kind === "post" && t.posted && <span className="posted-badge">Posted</span>}
+                    {verifyBadge(t, date, new Date())}
                     {t.kind === "event" && t.eventRole && (
                       <span className={`event-role-badge ${t.eventRole}`}>
                         {t.eventRole === "play" ? "▶ Play" : "🎤 Host"}
@@ -1019,6 +1132,109 @@ function DayDetail({
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Best time to post — average engagement per posting hour, from verified
+// posts that have engagement numbers. Needs at least 5 such posts before
+// it says anything; until then it says so plainly.
+// ---------------------------------------------------------------------------
+
+function BestTimePanel() {
+  const [history, setHistory] = useState<GetHistoryResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    const to = todayStr();
+    const fromD = new Date(to + "T00:00:00Z");
+    fromD.setUTCDate(fromD.getUTCDate() - 29);
+    const from = fromD.toISOString().slice(0, 10);
+    api
+      .getHistory({ from, to })
+      .then((h: GetHistoryResponse) => {
+        if (alive) setHistory(h);
+      })
+      .catch(() => {
+        if (alive) setHistory(null);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const samples = useMemo(() => {
+    if (!history) return [];
+    const out: { hour: number; total: number }[] = [];
+    for (const d of history.days) {
+      for (const t of d.tasks) {
+        if (t.kind !== "post" || !t.verified || !t.time) continue;
+        if (!hasEngagement(t)) continue;
+        out.push({ hour: Number(t.time.split(":")[0] ?? 0), total: engagementTotal(t) });
+      }
+    }
+    return out;
+  }, [history]);
+
+  const byHour = useMemo(() => {
+    const m = new Map<number, { n: number; sum: number }>();
+    for (const s of samples) {
+      const e = m.get(s.hour) ?? { n: 0, sum: 0 };
+      e.n += 1;
+      e.sum += s.total;
+      m.set(s.hour, e);
+    }
+    return [...m.entries()]
+      .map(([hour, v]) => ({ hour, n: v.n, avg: Math.round(v.sum / v.n) }))
+      .sort((a, b) => a.hour - b.hour);
+  }, [samples]);
+
+  const best = byHour.length > 0 ? Math.max(...byHour.map((b) => b.avg)) : 0;
+
+  return (
+    <section className="panel best-time-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Best time to post</h2>
+          <p className="panel-sub">Average engagement per posting hour, from verified posts.</p>
+        </div>
+      </div>
+      {loading ? (
+        <div className="loading-block">
+          <span className="spinner" /> Loading post data…
+        </div>
+      ) : samples.length < 5 ? (
+        <p className="empty-note">
+          Not enough data yet — fill engagement on a few posted tasks and the best time will appear here. (
+          {samples.length} of 5 posted tasks with engagement so far.)
+        </p>
+      ) : (
+        <div className="best-time-list">
+          {byHour.map((b) => (
+            <div key={b.hour} className="best-time-row">
+              <span className="best-time-label">{hourLabel(b.hour)}</span>
+              <div className="best-time-track">
+                <span
+                  className={`best-time-fill ${b.avg === best ? "best" : ""}`}
+                  style={{ width: `${best > 0 ? Math.max(4, Math.round((b.avg / best) * 100)) : 0}%` }}
+                />
+              </div>
+              <span className="best-time-val">
+                {fmtNum(b.avg)} avg · {b.n} {b.n === 1 ? "post" : "posts"}
+              </span>
+            </div>
+          ))}
+          <p className="panel-sub">
+            Best: {byHour.filter((b) => b.avg === best).map((b) => hourLabel(b.hour)).join(", ")} — based on{" "}
+            {samples.length} verified posts from the last 30 days.
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1399,6 +1615,12 @@ export function App() {
     eventRole: EventRole | null;
     remind: boolean;
     kaito: boolean;
+    engagement?: {
+      views: number | null;
+      likes: number | null;
+      reposts: number | null;
+      replies: number | null;
+    };
   }) {
     const payload = {
       title: v.title,
@@ -1414,7 +1636,13 @@ export function App() {
       kaito: v.kaito,
     };
     if (v.id) {
-      await withSave(() => api.updateTask({ id: v.id!, ...payload }), "Task updated ✓");
+      await withSave(async () => {
+        await api.updateTask({ id: v.id!, ...payload });
+        // Engagement belongs to this task on the day being edited.
+        if (v.kind === "post" && v.engagement) {
+          await api.setEngagement({ taskId: v.id!, date: selectedDate, ...v.engagement });
+        }
+      }, "Task updated ✓");
     } else {
       await withSave(() => api.addTask(payload), "Task added ✓");
     }
@@ -1875,6 +2103,8 @@ export function App() {
                     ))}
                   </div>
                 )}
+
+                <BestTimePanel />
               </>
             )}
           </section>
@@ -2130,6 +2360,12 @@ export function App() {
                       eventRole: editingTask.eventRole,
                       remind: editingTask.remind,
                       kaito: editingTask.kaito,
+                      engagement: {
+                        views: editingTask.views,
+                        likes: editingTask.likes,
+                        reposts: editingTask.reposts,
+                        replies: editingTask.replies,
+                      },
                     }
                   : {
                       title: "",

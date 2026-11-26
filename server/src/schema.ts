@@ -39,6 +39,14 @@ export const completions = sqliteTable(
     taskId: integer("task_id").notNull(),
     date: text("date").notNull(),
     done: integer("done").notNull().default(1),
+    // Per-day post check: 1 when the post was actually seen live, plus
+    // who checked it, and the post's engagement numbers for that day.
+    verified: integer("verified").notNull().default(0),
+    verifiedSource: text("verified_source"),
+    views: integer("views"),
+    likes: integer("likes"),
+    reposts: integer("reposts"),
+    replies: integer("replies"),
   },
   (t) => [uniqueIndex("completions_task_date").on(t.taskId, t.date)],
 );

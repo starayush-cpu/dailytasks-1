@@ -527,7 +527,7 @@ input, select, textarea { font-family: inherit; }
 .task-title-row { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
 .task-title { font-size: 15px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
 .task-row.done .task-title { text-decoration: line-through; }
-.kaito-badge, .posted-badge, .event-role-badge {
+.kaito-badge, .posted-badge, .event-role-badge, .verified-badge, .not-posted-badge, .link-saved-badge {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -539,6 +539,9 @@ input, select, textarea { font-family: inherit; }
 }
 .kaito-badge { background: rgba(0, 229, 160, 0.16); color: #6ee7b7; border: 1px solid rgba(0, 229, 160, 0.35); }
 .posted-badge { background: rgba(59, 130, 246, 0.16); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.35); }
+.verified-badge { background: rgba(34, 197, 94, 0.16); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.35); }
+.not-posted-badge { background: rgba(245, 158, 11, 0.16); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.35); }
+.link-saved-badge { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.30); }
 .event-role-badge.play { background: rgba(139, 92, 246, 0.16); color: #c4b5fd; border: 1px solid rgba(139, 92, 246, 0.35); }
 .event-role-badge.host { background: rgba(245, 158, 11, 0.16); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.35); }
 .task-meta {
@@ -575,6 +578,34 @@ input, select, textarea { font-family: inherit; }
   font-size: 13.5px;
 }
 .task-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.task-engagement { font-size: 12.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+/* Engagement entry (edit form) */
+.engagement-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; margin-top: 0.35rem; }
+.engagement-grid label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 12px; color: var(--dim); font-weight: 700; }
+.engagement-grid input {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 6, 32, 0.45);
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 480px) {
+  .engagement-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Best time to post */
+.best-time-panel { margin-top: 1rem; }
+.best-time-list { display: flex; flex-direction: column; gap: 0.55rem; margin-top: 0.5rem; }
+.best-time-row { display: flex; align-items: center; gap: 0.6rem; }
+.best-time-label { width: 3.4rem; flex-shrink: 0; font-size: 12.5px; font-weight: 800; color: var(--text); text-align: right; }
+.best-time-track { flex: 1; height: 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; min-width: 0; }
+.best-time-fill { display: block; height: 100%; border-radius: 999px; background: #3b82f6; }
+.best-time-fill.best { background: #5eead4; }
+.best-time-val { flex-shrink: 0; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* Empty state */
 .empty-state { text-align: center; padding: 2.25rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }

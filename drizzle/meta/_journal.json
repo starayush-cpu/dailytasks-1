@@ -15,6 +15,13 @@
       "when": 1795649351172,
       "tag": "0002_daily_hub_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795687847452,
+      "tag": "0003_post_verification",
+      "breakpoints": true
     }
   ]
 }
