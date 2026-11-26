@@ -248,7 +248,7 @@ function Avatar({ src, name, size = 40 }: { src?: string | null; name: string; s
   );
 }
 
-function ProjectAvatar({ project, size = 22 }: { project: Pick<Project, "name" | "color" | "logo">; size?: number }) {
+function ProjectAvatar({ project, size = 30 }: { project: Pick<Project, "name" | "color" | "logo">; size?: number }) {
   const src = projectLogoSrc(project);
   if (src) {
     return (
@@ -382,7 +382,7 @@ function TaskRow({
             <span className="task-title">{t.title}</span>
             {t.kind === "post" && t.kaito && (
               <span className="kaito-badge" title="Post on Kaito">
-                {platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 12)} Kaito
+                {platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 16)} Kaito
               </span>
             )}
             {t.kind === "post" && t.posted && <span className="posted-badge">Posted</span>}
@@ -401,7 +401,7 @@ function TaskRow({
                     color: t.projectColor ?? "blue",
                     logo: null,
                   }}
-                  size={14}
+                  size={30}
                 />
                 {t.projectName}
               </span>
@@ -411,12 +411,12 @@ function TaskRow({
             <span className={`task-status ${statusClass(st)}`}>{statusLabel(st)}</span>
             {t.kind === "post" && (
               <span className="task-platforms">
-                {platformIcon(PLATFORM_ICONS.x.src, "X", 14)}
-                {t.kaito && platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 14)}
+                {platformIcon(PLATFORM_ICONS.x.src, "X", 18)}
+                {t.kaito && platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 18)}
               </span>
             )}
             {t.kind === "discord" && (
-              <span className="task-platforms">{platformIcon(PLATFORM_ICONS.discord.src, "Discord", 14)}</span>
+              <span className="task-platforms">{platformIcon(PLATFORM_ICONS.discord.src, "Discord", 18)}</span>
             )}
             {t.recurring && <span className="task-recurring">↻ Daily</span>}
           </div>
@@ -692,7 +692,7 @@ function TaskForm({ projects, initial, onSave, onCancel, saving }: TaskFormProps
           </label>
           <label className="check-row kaito-row">
             <input type="checkbox" checked={kaito} onChange={(e) => setKaito(e.target.checked)} />
-            {platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 18)}
+            {platformIcon(PLATFORM_ICONS.kaito.src, "Kaito", 20)}
             <span>Post this on Kaito too</span>
           </label>
         </>
@@ -784,6 +784,12 @@ function ProjectForm({ initial, onSave, onCancel, saving }: ProjectFormProps) {
           placeholder="https://…/logo.png — or tell me and I will add it"
         />
         <small className="field-hint">Shown next to the project name. Leave empty to use the colour dot.</small>
+        {logo.trim() && (
+          <span className="logo-preview">
+            <span>Preview</span>
+            <ProjectAvatar project={{ name: name.trim() || "Project", color, logo: logo.trim() }} size={30} />
+          </span>
+        )}
       </label>
       <label className="field">
         <span>Note (optional)</span>
@@ -1647,7 +1653,7 @@ export function App() {
             <ul className="project-list">
               {activeProjects.map((p) => (
                 <li key={p.id} className="project-item">
-                  <ProjectAvatar project={p} size={24} />
+                  <ProjectAvatar project={p} size={30} />
                   <span className="project-name">{p.name}</span>
                   {p.link && (
                     <a href={p.link} target="_blank" rel="noreferrer" className="project-discord" title="Open Discord">
@@ -1667,7 +1673,7 @@ export function App() {
               <ul className="project-list ended">
                 {endedProjects.map((p) => (
                   <li key={p.id} className="project-item ended">
-                    <ProjectAvatar project={p} size={24} />
+                    <ProjectAvatar project={p} size={30} />
                     <span className="project-name">{p.name}</span>
                     <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEnded(p, false)}>
                       Resume
@@ -1977,7 +1983,7 @@ export function App() {
                       const pct = pc.target > 0 ? Math.min(100, Math.round((pc.sent / pc.target) * 100)) : 0;
                       return (
                         <div key={p.id} className="project-chat-row">
-                          <ProjectAvatar project={p} size={28} />
+                          <ProjectAvatar project={p} size={30} />
                           <div className="project-chat-main">
                             <div className="project-chat-head">
                               <strong>{p.name}</strong>
